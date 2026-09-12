@@ -258,6 +258,14 @@ Two things that aren't obvious and will silently degrade the bot if changed:
   rejects, so alerts quietly fall back to text-only.
 - **Ad pages themselves are bot-blocked** (HTTP 403), but the JSON search
   endpoint is not. Everything here goes through the latter.
+- **Subito blocks by TLS fingerprint, not only by IP.** A GitHub-hosted runner
+  gets 403 on every request while a residential connection gets 200. Proxies do
+  not fix this: SOCKS5 tunnels TCP, so the client negotiates TLS end-to-end
+  through it and its fingerprint arrives unchanged regardless of whose IP
+  carries it. Verified by sending the same proxy, with the same exit IP, from
+  both — 200 from home, 403 from a runner. Run this from a network that
+  subito accepts; there is no request-shaping fix.
+
 
 ## Tests
 

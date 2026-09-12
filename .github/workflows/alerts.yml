@@ -60,12 +60,6 @@ jobs:
           restore-keys: |
             subito-state-
 
-      # Subito's Akamai edge refuses GitHub's ASN outright, so a runner needs
-      # borrowed IPs. This tops the pool up when the cached one has died off;
-      # it is a no-op while enough proxies are still known to work.
-      - name: Refresh proxy pool
-        run: python -m subito_alerts.main --refresh-proxies
-
       - name: Run alerts
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

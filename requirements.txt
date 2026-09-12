@@ -1,5 +1,2 @@
-# [socks] pulls in PySocks, which requests needs for socks5:// proxies.
-# Those are the bulk of the working proxy pool — ~14% of SOCKS5 entries reach
-# subito versus ~3% of HTTP ones — so this is not optional in practice.
-requests[socks]>=2.31
+requests>=2.31
 PyYAML>=6.0
