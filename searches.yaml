@@ -1,0 +1,46 @@
+# When the bot is allowed to run, in LOCAL time.
+#
+# This is the single source of truth for scheduling. GitHub's cron is UTC-only
+# and Rome shifts between UTC+1 and UTC+2, so the workflow's cron is *derived*
+# from this block — regenerate it with:
+#
+#     python -m subito_alerts.main --sync-schedule
+#
+schedule:
+  timezone: Europe/Rome
+  active_hours: "08:00-22:00"   # end is exclusive: last run starts before 22:00
+  # days: [mon, tue, wed, thu, fri]   # optional; defaults to every day
+
+# Applied to every search unless the search overrides them.
+defaults:
+  interval_minutes: 60
+  max_pages: 2
+
+searches:
+  - name: bici-da-corsa
+    query: "bici da corsa"
+    interval_minutes: 15
+
+    filters:
+      price_min: 200
+      price_max: 600
+      shippable: true      # only ads the seller will ship
+      # title_only: true   # match the query against the title only
+      # category: 41       # subito category id (41 = Biciclette)
+      # region: 12         # subito region id (12 = Lazio)
+
+    # Cheap local reject list, applied before the LLM sees anything.
+    # Use it for words that are *always* wrong — it saves LLM quota.
+    exclude_keywords:
+      - bambino
+      - bimbo
+      - ricambi
+
+    # The important bit: plain English, as specific as you can be about both
+    # what you want and what you don't.
+    prompt: >
+      A complete road bike (bici da corsa) in frame size 54-56, carbon or good
+      quality aluminium, with Shimano 105 groupset or better, in ridable
+      condition. Not interested in: frames sold alone, spare parts, wheels,
+      accessories, mountain bikes, gravel bikes, city bikes, e-bikes, or
+      anything described as needing significant restoration.
