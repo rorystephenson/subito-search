@@ -117,10 +117,17 @@ class TestPool(unittest.TestCase):
     def test_refresh_adds_only_working_proxies(self):
         pool = ProxyPool(records=[], min_pool=2)
         pool.fetch_candidates = lambda: [f"http://10.0.0.{i}:1080" for i in range(10)]
-        # Only even-numbered candidates "work".
-        pool.refresh(lambda url: self._octet(url) % 2 == 0)
+        # Only even-numbered candidates "work"; the rest report why they didn't.
+        pool.refresh(lambda url: "ok" if self._octet(url) % 2 == 0 else "connect-timeout")
         self.assertGreaterEqual(len(pool.proven), 2)
         self.assertTrue(all(self._octet(r.url) % 2 == 0 for r in pool.proven))
+
+    def test_refresh_ignores_non_ok_outcomes(self):
+        # Anything other than "ok" must not be treated as a working proxy.
+        pool = ProxyPool(records=[], min_pool=2)
+        pool.fetch_candidates = lambda: [f"http://10.0.0.{i}:1080" for i in range(6)]
+        pool.refresh(lambda url: "blocked-403")
+        self.assertEqual(pool.proven, [])
 
     def test_refresh_survives_unreachable_sources(self):
         pool = ProxyPool(records=[], min_pool=2, sources=["https://example.invalid/x.txt"])

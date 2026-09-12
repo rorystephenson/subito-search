@@ -18,6 +18,7 @@ calls — the ones carrying credentials — always connect directly.
 
 from __future__ import annotations
 
+import collections
 import concurrent.futures
 import logging
 import random
@@ -43,7 +44,9 @@ MAX_STRIKES = 3
 # Forget a proxy that hasn't worked in this long, so the pool can't fossilise.
 STALE_AFTER = timedelta(days=3)
 
-PROBE_TIMEOUT = 8
+# Generous: a runner may sit far from both the proxy and subito, and a probe
+# that times out is indistinguishable from a proxy that is simply dead.
+PROBE_TIMEOUT = 15
 REQUEST_TIMEOUT = 20
 
 
@@ -224,36 +227,70 @@ class ProxyPool:
         log.info("probing %d candidates for working proxies…", len(batch))
 
         added = 0
+        outcomes: collections.Counter[str] = collections.Counter()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.probe_concurrency) as pool:
-            for url, ok in zip(batch, pool.map(probe, batch)):
-                if ok:
+            for url, outcome in zip(batch, pool.map(probe, batch)):
+                outcomes[outcome] += 1
+                if outcome == "ok":
                     self.record_success(url)
                     added += 1
                     if len(self.proven) >= self.min_pool:
                         break
+
+        log.info(
+            "probe outcomes: %s",
+            ", ".join(f"{n} {name}" for name, n in outcomes.most_common()),
+        )
         log.info("added %d working proxies (pool now %d)", added, len(self.proven))
         return added
 
 
 class Prober:
-    """Callable that reports whether a proxy can actually reach the target."""
+    """Callable that reports whether a proxy can actually reach the target.
 
-    def __init__(self, url: str, params: dict[str, Any], headers: dict[str, str]):
+    Returns a short outcome string rather than a bool: when a whole batch fails
+    it matters a great deal whether they timed out (too slow from here, raise
+    the timeout) or came back 403 (the proxy is itself blocked), and throwing
+    that away leaves you guessing.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        params: dict[str, Any],
+        headers: dict[str, str],
+        timeout: int = PROBE_TIMEOUT,
+    ):
         self.url, self.params, self.headers = url, params, headers
+        self.timeout = timeout
 
-    def __call__(self, proxy: str) -> bool:
+    def __call__(self, proxy: str) -> str:
         try:
             resp = requests.get(
                 self.url,
                 params=self.params,
                 headers=self.headers,
                 proxies={"http": proxy, "https": proxy},
-                timeout=PROBE_TIMEOUT,
+                timeout=self.timeout,
             )
-            return resp.status_code == 200 and bool(resp.json().get("ads"))
-        except Exception:
-            # Dead proxies fail in every imaginable way; none of them are news.
-            return False
+        except requests.exceptions.ConnectTimeout:
+            return "connect-timeout"
+        except requests.exceptions.ReadTimeout:
+            return "read-timeout"
+        except requests.exceptions.SSLError:
+            return "tls-error"
+        except requests.exceptions.ProxyError:
+            return "proxy-error"
+        except Exception as exc:
+            return type(exc).__name__
+        if resp.status_code == 403:
+            return "blocked-403"
+        if resp.status_code != 200:
+            return f"http-{resp.status_code}"
+        try:
+            return "ok" if resp.json().get("ads") else "empty"
+        except ValueError:
+            return "bad-json"
 
 
 def as_requests_proxies(url: str | None) -> dict[str, str] | None:

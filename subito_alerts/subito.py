@@ -11,7 +11,7 @@ from typing import Any, Iterator
 
 import requests
 
-from .proxies import Prober, ProxyPool, as_requests_proxies
+from .proxies import PROBE_TIMEOUT, Prober, ProxyPool, as_requests_proxies
 
 log = logging.getLogger(__name__)
 
@@ -206,9 +206,14 @@ class SubitoClient:
         self._preferred: str | None = None
         self._direct_blocked = False
 
-    def prober(self) -> Prober:
+    def prober(self, timeout: int | None = None) -> Prober:
         """A probe that checks a proxy against the real endpoint."""
-        return Prober(SEARCH_URL, {"q": "bici", "lim": 2, "sort": "datedesc"}, dict(HEADERS))
+        return Prober(
+            SEARCH_URL,
+            {"q": "bici", "lim": 2, "sort": "datedesc"},
+            dict(HEADERS),
+            timeout=timeout or PROBE_TIMEOUT,
+        )
 
     def _transports(self) -> Iterator[str | None]:
         """Transports to try in order; None means a direct connection."""
