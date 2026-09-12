@@ -1,7 +1,0 @@
-19:19:06 INFO    no state file at state.json, starting cold
-19:19:06 INFO    no stored state, cold-starting with a 0:30:00 look-back
-19:19:06 INFO    [pixel-10-pro-xl] searching 'pixel 10 pro xl' for ads since 2026-09-12 18:49:06.293866+02:00
-19:19:06 INFO    [pixel-10-pro-xl] 1 fetched → 1 new candidate(s) (seen 0, old 0, price 0, keyword 0)
-19:19:10 INFO      reject 1350 €  GOOGLE PIXEL 11 PRO XL 512 gb Verde Oliva — Wrong phone model (Pixel 11 Pro XL) and seller only does local pickup.
-19:19:10 INFO    saved state to state.json
-19:19:10 INFO    done: 1 fetched, 1 classified, 0 matched, 0 sent
