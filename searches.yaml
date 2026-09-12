@@ -1,8 +1,7 @@
 # When the bot is allowed to run, in LOCAL time.
 #
-# This is the single source of truth for scheduling. GitHub's cron is UTC-only
-# and Rome shifts between UTC+1 and UTC+2, so the workflow's cron is *derived*
-# from this block — regenerate it with:
+# This is the single source of truth for scheduling. Regenerate the GitHub
+# workflow's cron (UTC, DST-aware) or the launchd job after changing it:
 #
 #     python -m subito_alerts.main --sync-schedule
 #
@@ -13,22 +12,20 @@ schedule:
 
 # How to reach subito when this machine's IP is blocked.
 #
-# Subito sits behind Akamai, which refuses the big cloud ASNs outright: a
-# GitHub-hosted runner gets HTTP 403 on everything, while a home connection is
-# fine. In "auto" the bot connects directly and only falls back to borrowed IPs
-# when that fails, so running locally costs nothing.
+# Subito sits behind Akamai, which refuses the big cloud ASNs: a GitHub-hosted
+# runner gets HTTP 403 on everything, while a home connection is fine. In "auto"
+# the bot connects directly and only falls back to borrowed IPs when that fails,
+# so running from home costs nothing.
 #
 # Only subito searches are ever proxied. Telegram and Gemini carry credentials
 # and always connect directly — these proxies are run by strangers.
 #
-#   python -m subito_alerts.main --refresh-proxies
+#     python -m subito_alerts.main --refresh-proxies
 #
 proxies:
   mode: auto            # auto (direct first) | always (proxy only) | never
   min_pool: 3           # top up when fewer than this many are known to work
   max_attempts: 6       # transports to try before giving up on a request
-  # sources:            # defaults to the VPSLab socks5 + ssl-elite lists
-  #   - https://raw.githubusercontent.com/VPSLabCloud/VPSLab-Free-Proxy-List/main/socks5_all.txt
 
 # Applied to every search unless the search overrides them.
 defaults:
@@ -36,30 +33,37 @@ defaults:
   max_pages: 2
 
 searches:
-  - name: bici-da-corsa
-    query: "bici da corsa"
+  - name: pixel-10-pro-xl
+    query: "pixel 10 pro xl"
     interval_minutes: 15
 
-    filters:
-      price_min: 200
-      price_max: 600
-      shippable: true      # only ads the seller will ship
-      # title_only: true   # match the query against the title only
-      # category: 41       # subito category id (41 = Biciclette)
-      # region: 12         # subito region id (12 = Lazio)
+    # Deliberately no price or shipping filters here. Subito's `shippable` flag
+    # is one sellers often leave unset even when they will post, so filtering on
+    # it server-side would silently drop good listings. The prompt below judges
+    # shipping from what the ad actually says instead.
+    filters: {}
 
-    # Cheap local reject list, applied before the LLM sees anything.
-    # Use it for words that are *always* wrong — it saves LLM quota.
-    exclude_keywords:
-      - bambino
-      - bimbo
-      - ricambi
+    # No keyword excludes either: they match the description too, so "non ho la
+    # custodia" would wrongly kill a real listing. The classifier handles it.
 
-    # The important bit: plain English, as specific as you can be about both
-    # what you want and what you don't.
     prompt: >
-      A complete road bike (bici da corsa) in frame size 54-56, carbon or good
-      quality aluminium, with Shimano 105 groupset or better, in ridable
-      condition. Not interested in: frames sold alone, spare parts, wheels,
-      accessories, mountain bikes, gravel bikes, city bikes, e-bikes, or
-      anything described as needing significant restoration.
+      A Google Pixel 10 Pro XL with 512GB of storage.
+
+      STORAGE — this rule decides the verdict on its own. Check the TITLE as
+      well as the description; the size is often only in the title, written as
+      "16/256", "16+256", "256 gb" or "256 giga".
+      If either the title or the description states a storage size smaller than
+      512GB, REJECT the ad. A size written in the title is stated knowledge, not
+      a doubt, and it overrides any inclination to keep the listing for checking.
+      Only when no storage size appears anywhere should you KEEP it — there I
+      would rather check a listing myself than miss one.
+
+      SHIPPING: reject ads where the seller will not post the phone. In Italian
+      these say things like "solo a mano", "consegna a mano", "solo di persona",
+      "ritiro in zona", "niente spedizioni", "no spedizione". Also reject ads
+      that only want to swap rather than sell — "solo scambio", "permuta",
+      "scambio a mano". If shipping is not mentioned either way, KEEP it.
+
+      Also reject: cases, covers, screen protectors, chargers, cables, spare
+      parts, screens, phones sold as broken or for parts, and other models —
+      plain Pixel 10, Pixel 10 Pro without XL, or any Pixel 9 or earlier.

@@ -40,6 +40,11 @@ For each ad decide whether it is worth the buyer's attention.
 
 Guidance:
 - Judge only against the buyer's stated criteria. Do not invent extra requirements.
+- READ THE TITLE AS CAREFULLY AS THE DESCRIPTION. Sellers routinely put the \
+decisive specification — storage size, capacity, model, year, frame size — in the \
+title alone, and the description often does not repeat it. A detail present only \
+in the title is still stated, not missing. Where the two disagree, say so and \
+treat the listing as ambiguous.
 - Subito's own search is loose and returns loosely-related items; those are exactly \
 what you should reject.
 - Reject accessories, spare parts, and related-but-different products when the \

@@ -72,6 +72,10 @@ class Ad:
             "price": self.price_text or "non indicato",
             "condition": self.condition or "non indicata",
             "location": self.location,
+            # The seller's own shipping flag. Worth showing even though the
+            # description usually repeats it: a prompt can key off "will they
+            # post it" without having to infer it from free text.
+            "seller_ships": "sì" if self.shippable else "non indicato",
         }
 
 

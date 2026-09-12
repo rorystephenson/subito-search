@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -177,6 +178,79 @@ def refresh_proxies(config: Config, state_path: Path) -> int:
     return 0
 
 
+LAUNCHD_LABEL = "com.subito-alerts.agent"
+
+LAUNCHD_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" \
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{python}</string>
+    <string>-m</string>
+    <string>subito_alerts.main</string>
+  </array>
+  <key>WorkingDirectory</key><string>{workdir}</string>
+  <!-- Fires this often; the schedule block in searches.yaml decides whether
+       there is anything to do, so runs outside active hours exit immediately.
+       launchd also runs a missed job once after the Mac wakes. -->
+  <key>StartInterval</key><integer>{interval}</integer>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardErrorPath</key><string>{log}</string>
+</dict>
+</plist>
+"""
+
+
+def install_launchd(config: Config, project: Path) -> int:
+    """Install a launchd agent that runs the bot on this Mac.
+
+    Scheduled runners are blocked by subito, so the practical place to run this
+    is a machine on a residential connection. The interval comes from
+    searches.yaml, same as the workflow cron does.
+    """
+    import subprocess
+
+    python = project / ".venv/bin/python"
+    if not python.exists():
+        python = Path(sys.executable)
+
+    logs = project / "logs"
+    logs.mkdir(exist_ok=True)
+    plist_path = Path.home() / "Library/LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plist_path.write_text(LAUNCHD_PLIST.format(
+        label=LAUNCHD_LABEL,
+        python=python,
+        workdir=project,
+        interval=config.min_interval * 60,
+        log=logs / "subito-alerts.log",
+    ))
+
+    # bootout first so a reinstall picks up changes rather than silently keeping
+    # the old definition; it fails harmlessly when nothing is loaded yet.
+    domain = f"gui/{os.getuid()}"
+    subprocess.run(["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"],
+                   capture_output=True)
+    result = subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"✗ launchctl bootstrap failed: {result.stderr.strip()}")
+        return 1
+
+    print(f"✓ installed {plist_path}")
+    print(f"  runs every {config.min_interval}m, active {config.schedule.describe()}")
+    print(f"  logs: {logs / 'subito-alerts.log'}")
+    print(f"\n  status:    launchctl list | grep {LAUNCHD_LABEL}")
+    print(f"  run now:   launchctl kickstart {domain}/{LAUNCHD_LABEL}")
+    print(f"  uninstall: launchctl bootout {domain}/{LAUNCHD_LABEL}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="subito-alerts",
@@ -217,6 +291,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workflow", type=Path, default=Path(".github/workflows/alerts.yml"),
         help="workflow file to sync (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--install-launchd", action="store_true",
+        help="install a launchd agent on this Mac that runs the bot on schedule",
     )
     parser.add_argument(
         "--refresh-proxies", action="store_true",
@@ -304,6 +382,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.sync_schedule:
         return sync_schedule(config, args.workflow)
+
+    if args.install_launchd:
+        return install_launchd(config, Path.cwd())
 
     if args.refresh_proxies:
         return refresh_proxies(config, args.state)
