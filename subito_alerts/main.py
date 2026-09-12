@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .classify import ClassifierError, GeminiClassifier, Verdict
 from .config import Config, ConfigError, Search, load_config, load_dotenv
+from .proxies import ProxyPool
 from .state import SearchState, State
 from .subito import Ad, SubitoClient
 from .schedule import (
@@ -139,6 +140,43 @@ def run_search(
     return counts
 
 
+def build_client(config: Config, state: State) -> SubitoClient:
+    """A search client, with a proxy pool when the config allows one."""
+    pool = None
+    if config.proxies.enabled:
+        pool = ProxyPool.from_json(
+            state.proxies,
+            sources=config.proxies.sources,
+            min_pool=config.proxies.min_pool,
+            probe_concurrency=config.proxies.probe_concurrency,
+            probe_batch=config.proxies.probe_batch,
+        )
+    return SubitoClient(
+        pool=pool,
+        allow_direct=config.proxies.allow_direct,
+        max_proxy_attempts=config.proxies.max_attempts,
+    )
+
+
+def refresh_proxies(config: Config, state_path: Path) -> int:
+    """Probe public lists for working proxies and record them in the state."""
+    if not config.proxies.enabled:
+        print("proxies are disabled (proxies.mode: never)")
+        return 0
+    state = State.load(state_path)
+    client = build_client(config, state)
+    pool = client.pool
+    assert pool is not None
+    before = len(pool.proven)
+    pool.refresh(client.prober())
+    state.proxies = pool.to_json()
+    state.save()
+    print(f"working proxies: {before} -> {len(pool.proven)} (of {len(pool.records)} known)")
+    for record in sorted(pool.proven, key=lambda r: -r.successes)[:10]:
+        print(f"    {record.url:34} ok={record.successes} strikes={record.strikes}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="subito-alerts",
@@ -179,6 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workflow", type=Path, default=Path(".github/workflows/alerts.yml"),
         help="workflow file to sync (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--refresh-proxies", action="store_true",
+        help="probe public proxy lists for working proxies, then exit",
     )
     parser.add_argument(
         "--ignore-schedule", action="store_true",
@@ -263,6 +305,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.sync_schedule:
         return sync_schedule(config, args.workflow)
 
+    if args.refresh_proxies:
+        return refresh_proxies(config, args.state)
+
     searches = config.searches
 
     if args.only:
@@ -304,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     state = State.load(args.state)
-    client = SubitoClient()
+    client = build_client(config, state)
 
     total = Counts()
     failed = False
@@ -321,6 +366,10 @@ def main(argv: list[str] | None = None) -> int:
         for field_name in vars(total):
             setattr(total, field_name,
                     getattr(total, field_name) + getattr(counts, field_name))
+
+    if client.pool is not None:
+        client.pool.prune()
+        state.proxies = client.pool.to_json()
 
     if args.dry_run:
         log.info("dry run — state not saved")

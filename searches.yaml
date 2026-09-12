@@ -11,6 +11,25 @@ schedule:
   active_hours: "08:00-22:00"   # end is exclusive: last run starts before 22:00
   # days: [mon, tue, wed, thu, fri]   # optional; defaults to every day
 
+# How to reach subito when this machine's IP is blocked.
+#
+# Subito sits behind Akamai, which refuses the big cloud ASNs outright: a
+# GitHub-hosted runner gets HTTP 403 on everything, while a home connection is
+# fine. In "auto" the bot connects directly and only falls back to borrowed IPs
+# when that fails, so running locally costs nothing.
+#
+# Only subito searches are ever proxied. Telegram and Gemini carry credentials
+# and always connect directly — these proxies are run by strangers.
+#
+#   python -m subito_alerts.main --refresh-proxies
+#
+proxies:
+  mode: auto            # auto (direct first) | always (proxy only) | never
+  min_pool: 3           # top up when fewer than this many are known to work
+  max_attempts: 6       # transports to try before giving up on a request
+  # sources:            # defaults to the VPSLab socks5 + ssl-elite lists
+  #   - https://raw.githubusercontent.com/VPSLabCloud/VPSLab-Free-Proxy-List/main/socks5_all.txt
+
 # Applied to every search unless the search overrides them.
 defaults:
   interval_minutes: 60
