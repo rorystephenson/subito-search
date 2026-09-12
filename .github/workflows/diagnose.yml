@@ -1,0 +1,56 @@
+name: Proxy parity test
+on:
+  workflow_dispatch:
+    inputs:
+      proxies:
+        description: "Comma-separated proxies proven working from a residential IP"
+        required: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - name: Compare the same proxies from a runner
+        env:
+          PROXIES: ${{ inputs.proxies }}
+        run: |
+          python - <<'PY'
+          import os, requests
+          from subito_alerts.subito import SEARCH_URL, HEADERS
+
+          PARAMS = {"q": "bici", "lim": 2, "sort": "datedesc"}
+
+          def subito(px=None, timeout=30):
+              r = requests.get(SEARCH_URL, params=PARAMS, headers=HEADERS,
+                               proxies=px, timeout=timeout)
+              ads = len((r.json() or {}).get("ads", [])) if r.status_code == 200 else 0
+              return r.status_code, ads
+
+          print("runner IP:", requests.get("https://api.ipify.org", timeout=15).text)
+
+          # Control: confirm this runner really is blocked without a proxy.
+          try:
+              print("CONTROL direct -> subito %s ads=%s" % subito())
+          except Exception as e:
+              print("CONTROL direct -> failed:", type(e).__name__)
+
+          print("\nproxy                                 reachable  egress            subito")
+          print("-" * 78)
+          for p in [x.strip() for x in os.environ["PROXIES"].split(",") if x.strip()]:
+              px = {"http": p, "https": p}
+              try:
+                  egress = requests.get("https://api.ipify.org", proxies=px, timeout=25).text
+              except Exception as e:
+                  print(f"{p:37} NO ({type(e).__name__})")
+                  continue
+              try:
+                  status, ads = subito(px)
+                  verdict = "200 OK" if status == 200 and ads else str(status)
+              except Exception as e:
+                  verdict = f"failed: {type(e).__name__}"
+              print(f"{p:37} yes        {egress:16}  {verdict}")
+          PY
