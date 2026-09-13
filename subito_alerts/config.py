@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from .proxies import DEFAULT_SOURCES
 from .schedule import Schedule, ScheduleError, parse_schedule
 
 VALID_FILTERS = {
@@ -22,9 +23,31 @@ class ConfigError(Exception):
 
 
 @dataclass
+class ProxySettings:
+    """How to reach subito when the local network is blocked."""
+
+    mode: str = "auto"          # auto | always | never
+    sources: list[str] = field(default_factory=lambda: list(DEFAULT_SOURCES))
+    min_pool: int = 3
+    max_attempts: int = 6
+    probe_concurrency: int = 25
+    probe_batch: int = 150
+    impersonate: str = "chrome136"
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "never"
+
+    @property
+    def allow_direct(self) -> bool:
+        return self.mode != "always"
+
+
+@dataclass
 class Config:
     searches: list[Search]
     schedule: Schedule
+    proxies: ProxySettings = field(default_factory=ProxySettings)
 
     @property
     def min_interval(self) -> int:
@@ -75,7 +98,20 @@ def load_config(path: Path) -> Config:
     except ScheduleError as exc:
         raise ConfigError(f"{path}: {exc}") from None
 
-    return Config(searches=searches, schedule=schedule)
+    raw_proxies = data.get("proxies") or {}
+    mode = str(raw_proxies.get("mode", "auto")).lower()
+    if mode not in ("auto", "always", "never"):
+        raise ConfigError(f"{path}: proxies.mode must be auto, always or never, got {mode!r}")
+    proxies = ProxySettings(
+        mode=mode,
+        sources=list(raw_proxies.get("sources") or DEFAULT_SOURCES),
+        min_pool=int(raw_proxies.get("min_pool", 3)),
+        max_attempts=int(raw_proxies.get("max_attempts", 6)),
+        probe_concurrency=int(raw_proxies.get("probe_concurrency", 25)),
+        probe_batch=int(raw_proxies.get("probe_batch", 150)),
+        impersonate=str(raw_proxies.get("impersonate", "chrome136")),
+    )
+    return Config(searches=searches, schedule=schedule, proxies=proxies)
 
 
 def load_searches(path: Path) -> list[Search]:

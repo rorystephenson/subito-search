@@ -66,9 +66,17 @@ class SearchState:
 
 
 class State:
-    def __init__(self, path: Path, searches: dict[str, SearchState] | None = None):
+    def __init__(
+        self,
+        path: Path,
+        searches: dict[str, SearchState] | None = None,
+        proxies: list[dict[str, Any]] | None = None,
+    ):
         self.path = path
         self.searches = searches or {}
+        # Opaque here; ProxyPool owns the shape. Persisting it is what lets a
+        # run start from proxies the previous run proved rather than re-probing.
+        self.proxies = proxies or []
 
     @classmethod
     def load(cls, path: Path) -> State:
@@ -89,8 +97,12 @@ class State:
                 last_run=datetime.fromisoformat(last_run) if last_run else None,
                 seen_ids=list(raw.get("seen_ids") or []),
             )
-        log.info("loaded state for %d search(es) from %s", len(searches), path)
-        return cls(path, searches)
+        proxies = data.get("proxies") or []
+        log.info(
+            "loaded state for %d search(es) and %d proxies from %s",
+            len(searches), len(proxies), path,
+        )
+        return cls(path, searches, proxies)
 
     def for_search(self, name: str) -> SearchState:
         return self.searches.setdefault(name, SearchState())
@@ -98,6 +110,7 @@ class State:
     def save(self) -> None:
         payload: dict[str, Any] = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            "proxies": self.proxies,
             "searches": {
                 name: {
                     "last_run": s.last_run.isoformat() if s.last_run else None,

@@ -10,6 +10,25 @@ schedule:
   active_hours: "08:00-22:00"   # end is exclusive: last run starts before 22:00
   # days: [mon, tue, wed, thu, fri]   # optional; defaults to every day
 
+# How to reach subito when this machine's IP is refused.
+#
+# Subito sits behind Akamai, which applies two independent checks: it rejects
+# hosting-provider address ranges outright, and it scores the client's TLS and
+# HTTP/2 fingerprint. A request has to clear both.
+#
+#   - `sources` supply candidate proxies; the pool keeps the ones that work and
+#     remembers them in the state file between runs.
+#   - `impersonate` selects the browser profile curl_cffi reproduces. Roll it
+#     forward as Chrome versions age; `curl_cffi` ships the current list.
+#
+#     python -m subito_alerts.main --refresh-proxies
+#
+proxies:
+  mode: auto            # auto (direct first) | always (proxy only) | never
+  min_pool: 3           # stop probing once this many are known to work
+  max_attempts: 6       # transports to try before giving up on a request
+  impersonate: chrome136
+
 # Applied to every search unless the search overrides them.
 defaults:
   interval_minutes: 60

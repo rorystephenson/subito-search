@@ -10,22 +10,29 @@ from datetime import datetime
 from typing import Any, Iterator
 
 import requests
+from curl_cffi import requests as curl_requests
+
+from .proxies import PROBE_TIMEOUT, Prober, ProxyPool, as_requests_proxies
 
 log = logging.getLogger(__name__)
 
 SEARCH_URL = "https://hades.subito.it/v1/search/items"
 
-# A realistic desktop Chrome fingerprint. subito serves this endpoint to its own
-# web front-end, so we look like that front-end.
+# curl_cffi reproduces a real Chrome TLS and HTTP/2 fingerprint, and supplies
+# the matching User-Agent, Sec-Ch-Ua and Accept-Encoding itself. Overriding the
+# User-Agent here would contradict the negotiated handshake, which is a louder
+# signal than sending nothing at all — so these are only the headers Chrome adds
+# for an XHR issued by the subito single-page app.
+IMPERSONATE = "chrome136"
+
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-    ),
     "Accept": "application/json",
     "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
     "Referer": "https://www.subito.it/",
     "Origin": "https://www.subito.it",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
 }
 
 PAGE_SIZE = 50
@@ -179,38 +186,128 @@ def build_params(query: str, filters: dict[str, Any], start: int) -> dict[str, A
 
 
 class SubitoClient:
-    """Paginating, politely-throttled reader for the search API."""
+    """Paginating, politely-throttled reader for the search API.
 
-    def __init__(self, timeout: int = 20, max_retries: int = 3, delay: bool = True):
-        self.session = requests.Session()
+    Connects directly by default. Where the network is blocked — subito refuses
+    the major cloud ASNs outright — an optional ProxyPool supplies borrowed IPs
+    to fall back to. Only these search requests are ever proxied.
+    """
+
+    def __init__(
+        self,
+        timeout: int = 20,
+        max_retries: int = 3,
+        delay: bool = True,
+        pool: ProxyPool | None = None,
+        allow_direct: bool = True,
+        max_proxy_attempts: int = 6,
+        impersonate: str = IMPERSONATE,
+    ):
+        self.impersonate = impersonate
+        self.session = curl_requests.Session(impersonate=impersonate)
         self.session.headers.update(HEADERS)
         self.timeout = timeout
         self.max_retries = max_retries
         self.delay = delay
+        self.pool = pool
+        self.allow_direct = allow_direct
+        self.max_proxy_attempts = max_proxy_attempts
+        # Once a transport works, keep using it for the rest of the run rather
+        # than re-testing a blocked direct connection on every page.
+        self._preferred: str | None = None
+        self._direct_blocked = False
 
-    def _get(self, params: dict[str, Any]) -> dict[str, Any]:
+    def prober(self, timeout: int | None = None) -> Prober:
+        """A probe that checks a proxy against the real endpoint.
+
+        Deliberately uses the same client and impersonation profile as a real
+        fetch. Probing with a different HTTP stack would test a different
+        fingerprint, so its verdict would not predict what the fetch does.
+        """
+        return Prober(
+            SEARCH_URL,
+            {"q": "bici", "lim": 2, "sort": "datedesc"},
+            dict(HEADERS),
+            timeout=timeout or PROBE_TIMEOUT,
+            impersonate=self.impersonate,
+        )
+
+    def _transports(self) -> Iterator[str | None]:
+        """Transports to try in order; None means a direct connection."""
+        if self._preferred is not None:
+            yield self._preferred
+        if self.allow_direct and not self._direct_blocked and self._preferred is None:
+            yield None
+        if self.pool is None:
+            return
+        for url in self.pool.candidates()[: self.max_proxy_attempts]:
+            if url != self._preferred:
+                yield url
+
+    def _fetch_once(self, params: dict[str, Any], proxy: str | None) -> dict[str, Any]:
+        """One attempt over one transport, with backoff for transient errors."""
         last_error: Exception | None = None
-        for attempt in range(self.max_retries):
+        # A proxied request is slower, and retrying a dead proxy is pointless —
+        # move on to the next transport instead.
+        attempts = self.max_retries if proxy is None else 1
+        for attempt in range(attempts):
             try:
-                resp = self.session.get(SEARCH_URL, params=params, timeout=self.timeout)
+                resp = self.session.get(
+                    SEARCH_URL,
+                    params=params,
+                    timeout=self.timeout,
+                    proxies=as_requests_proxies(proxy),
+                )
                 if resp.status_code == 403:
-                    # Subito's edge refuses some networks outright. Retrying
-                    # cannot help, and hammering a refusal is the worst thing
-                    # to do when you have already been judged a bot.
-                    raise RuntimeError(
-                        "HTTP 403 from subito — this network appears to be blocked"
-                    )
+                    # Definitive: this IP is blocked. Retrying will not help.
+                    raise PermissionError(f"HTTP 403 from {proxy or 'direct connection'}")
                 if resp.status_code == 429 or resp.status_code >= 500:
                     raise requests.HTTPError(f"HTTP {resp.status_code}")
                 resp.raise_for_status()
                 return resp.json()
-            except (requests.RequestException, ValueError) as exc:
+            except PermissionError:
+                raise
+            except Exception as exc:
+                # curl_cffi raises its own error hierarchy, not requests', so
+                # catch broadly here rather than naming transport exceptions.
                 last_error = exc
-                backoff = 2**attempt + random.uniform(0, 1)
-                log.warning("subito request failed (%s), retrying in %.1fs", exc, backoff)
-                time.sleep(backoff)
+                if attempt + 1 < attempts:
+                    backoff = 2**attempt + random.uniform(0, 1)
+                    log.warning("subito request failed (%s), retrying in %.1fs", exc, backoff)
+                    time.sleep(backoff)
+        raise RuntimeError(last_error)
+
+    def _get(self, params: dict[str, Any]) -> dict[str, Any]:
+        errors: list[str] = []
+        for proxy in self._transports():
+            label = proxy or "direct"
+            try:
+                payload = self._fetch_once(params, proxy)
+            except PermissionError:
+                log.info("%s is blocked (HTTP 403)", label)
+                if proxy is None:
+                    self._direct_blocked = True
+                elif self.pool is not None:
+                    self.pool.record_failure(proxy)
+                errors.append(f"{label}: blocked")
+                continue
+            except Exception as exc:
+                # Dead proxies fail in every imaginable way; treat all the same.
+                log.debug("%s failed: %s", label, exc)
+                if proxy is not None and self.pool is not None:
+                    self.pool.record_failure(proxy)
+                errors.append(f"{label}: {exc}")
+                continue
+
+            if proxy is not None and self.pool is not None:
+                self.pool.record_success(proxy)
+            if self._preferred != proxy:
+                log.info("using %s", label)
+            self._preferred = proxy
+            return payload
+
         raise RuntimeError(
-            f"subito request failed after {self.max_retries} attempts: {last_error}"
+            "could not reach subito over any transport: " + "; ".join(errors[:4])
         )
 
     def search(
