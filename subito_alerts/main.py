@@ -348,6 +348,19 @@ def check(config: Config, workflow: Path, dry_run: bool) -> int:
     describe_schedule(config, workflow)
 
     ok = True
+
+    # Reachability is the thing most likely to be wrong on a new machine, and
+    # it is the one check that says which transport actually carried the
+    # request — direct, or through which borrowed IP.
+    client = build_client(config, State.load(Path("state.json")))
+    try:
+        ads = list(client.search("bici", max_pages=1))
+        transport = client._preferred or "direct connection"
+        print(f"✓ subito: {len(ads)} ads via {transport} (impersonating {client.impersonate})")
+    except Exception as exc:
+        print(f"✗ subito: {exc}")
+        ok = False
+
     try:
         classifier = GeminiClassifier()
         shape = classifier.ping()

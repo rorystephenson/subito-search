@@ -25,6 +25,10 @@ on:
         description: "Run even outside the configured active hours"
         type: boolean
         default: false
+      check_only:
+        description: "Only verify connectivity and exit"
+        type: boolean
+        default: false
 
 # Two overlapping runs would race on the state file and double-send.
 concurrency:
@@ -76,7 +80,8 @@ jobs:
           python -m subito_alerts.main \
             ${{ inputs.ignore_interval && '--ignore-interval' || '' }} \
             ${{ inputs.dry_run && '--dry-run' || '' }} \
-            ${{ inputs.ignore_schedule && '--ignore-schedule' || '' }}
+            ${{ inputs.ignore_schedule && '--ignore-schedule' || '' }} \
+            ${{ inputs.check_only && '--check' || '' }}
 
       # `always()` so a partial run still records what it already sent,
       # which prevents re-sending those ads next time.
