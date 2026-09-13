@@ -256,15 +256,19 @@ Two things that aren't obvious and will silently degrade the bot if changed:
   `subito_alerts/subito.py` uses `gallery-desktop-2x-jpeg`. The `-auto`
   renditions serve AVIF for some source images, which Telegram's fetcher
   rejects, so alerts quietly fall back to text-only.
-- **Ad pages themselves are bot-blocked** (HTTP 403), but the JSON search
-  endpoint is not. Everything here goes through the latter.
-- **Subito blocks by TLS fingerprint, not only by IP.** A GitHub-hosted runner
-  gets 403 on every request while a residential connection gets 200. Proxies do
-  not fix this: SOCKS5 tunnels TCP, so the client negotiates TLS end-to-end
-  through it and its fingerprint arrives unchanged regardless of whose IP
-  carries it. Verified by sending the same proxy, with the same exit IP, from
-  both — 200 from home, 403 from a runner. Run this from a network that
-  subito accepts; there is no request-shaping fix.
+- **Subito scores the client's TLS and HTTP/2 fingerprint.** A plain HTTP
+  library is refused with 403 from a GitHub runner; `curl_cffi` reproducing a
+  real Chrome handshake is accepted from the same machine. This is why the
+  client uses `curl_cffi` and why `impersonate` is configurable — roll it
+  forward as Chrome versions age.
+- **Do not override the User-Agent.** `curl_cffi` supplies a User-Agent,
+  `Sec-Ch-Ua` and `Accept-Encoding` matching the handshake it negotiates.
+  Replacing the User-Agent contradicts the TLS profile, which is a louder
+  signal than sending nothing. Only the XHR headers the subito app itself adds
+  are layered on top.
+- **The proxy pool is a fallback, not the mechanism.** With a browser
+  fingerprint a direct connection works, so the pool is built lazily the first
+  time a direct request is refused, and never probed otherwise.
 
 
 ## Tests
