@@ -277,8 +277,25 @@ class SubitoClient:
                     time.sleep(backoff)
         raise RuntimeError(last_error)
 
+    def _refill_pool_if_needed(self) -> None:
+        """Find proxies only once a direct connection has actually failed.
+
+        With a browser fingerprint the direct connection generally works, so
+        probing public lists on every run would spend a minute and a few hundred
+        requests to build something nothing uses.
+        """
+        if self.pool is None or not self._direct_blocked:
+            return
+        if self.pool.proven_hosts:
+            return
+        log.info("direct connection blocked and no proxies known — probing")
+        self.pool.refresh(self.prober())
+
     def _get(self, params: dict[str, Any]) -> dict[str, Any]:
         errors: list[str] = []
+        # _transports() is a generator and reads the pool only when it reaches
+        # it, so a refill triggered by the direct attempt failing is still seen
+        # on this same pass.
         for proxy in self._transports():
             label = proxy or "direct"
             try:
@@ -287,6 +304,7 @@ class SubitoClient:
                 log.info("%s is blocked (HTTP 403)", label)
                 if proxy is None:
                     self._direct_blocked = True
+                    self._refill_pool_if_needed()
                 elif self.pool is not None:
                     self.pool.record_failure(proxy)
                 errors.append(f"{label}: blocked")

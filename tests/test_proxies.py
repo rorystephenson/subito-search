@@ -250,3 +250,54 @@ class TestClientTransportSelection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLazyPoolRefill(unittest.TestCase):
+    """The pool is only built once a direct connection has actually failed."""
+
+    def make(self):
+        pool = ProxyPool(records=[], min_pool=1)
+        pool.fetch_candidates = lambda: ["http://10.0.0.1:1080"]
+        return SubitoClient(pool=pool, delay=False), pool
+
+    def responses(self, outcomes):
+        seen = []
+
+        def get(url, params=None, timeout=None, proxies=None):
+            key = proxies["https"] if proxies else None
+            seen.append(key)
+            resp = Mock(status_code=outcomes.get(key, 200))
+            resp.json.return_value = {"ads": []}
+            resp.raise_for_status = Mock()
+            return resp
+
+        return get, seen
+
+    def test_no_probing_while_direct_works(self):
+        client, pool = self.make()
+        probed = Mock()
+        pool.refresh = probed
+        get, _ = self.responses({})
+        with patch.object(client.session, "get", side_effect=get):
+            client._get({})
+        probed.assert_not_called()
+
+    def test_probes_and_recovers_when_direct_is_blocked(self):
+        client, pool = self.make()
+        get, seen = self.responses({None: 403})
+        with patch.object(client.session, "get", side_effect=get), \
+             patch.object(client, "prober", return_value=lambda url: "ok"):
+            client._get({})
+        # Direct refused, pool filled on the spot, request served by a proxy.
+        self.assertEqual(seen, [None, "http://10.0.0.1:1080"])
+        self.assertEqual(len(pool.proven_hosts), 1)
+
+    def test_does_not_reprobe_when_pool_already_has_hosts(self):
+        client, pool = self.make()
+        pool.record_success("http://10.0.0.5:1080")
+        probed = Mock()
+        pool.refresh = probed
+        get, _ = self.responses({None: 403})
+        with patch.object(client.session, "get", side_effect=get):
+            client._get({})
+        probed.assert_not_called()

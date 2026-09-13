@@ -64,12 +64,6 @@ jobs:
           restore-keys: |
             subito-state-
 
-      # Subito refuses hosting-provider ranges, so a runner needs a borrowed
-      # IP. Stops as soon as three distinct working hosts are known; a no-op
-      # while the cached pool still holds that many.
-      - name: Refresh proxy pool
-        run: python -m subito_alerts.main --refresh-proxies
-
       - name: Run alerts
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
