@@ -19,6 +19,7 @@ agree, so the schedule can never drift out of sync with the config.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -44,6 +45,11 @@ class Schedule:
     start: time
     end: time
     days: frozenset[int] | None = None  # 0 = Monday; None = every day
+    # Shifts the cron off :00/:15/:30/:45, where every other scheduled workflow
+    # on GitHub fires. Less congested, so less delayed, and less obviously
+    # machine-timed. Spacing stays even: at a 15 minute interval any shorter
+    # gap would wake a run that finds nothing due and exits.
+    minute_offset: int = 0
 
     # `end` is exclusive: "08:00-22:00" means the last run starts before 22:00.
     # start == end means no restriction at all.
@@ -109,7 +115,24 @@ def _parse_days(raw: object) -> frozenset[int] | None:
     return frozenset(days)
 
 
-def parse_schedule(raw: dict | None) -> Schedule:
+# Primes only. Every cron step we emit is smaller than these and none divides a
+# prime, so `offset % step` can never come out 0 — which would put the schedule
+# straight back on the hour boundary the offset exists to avoid.
+OFFSET_CHOICES = (7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59)
+
+
+def _derived_offset(seed: str) -> int:
+    """A stable, arbitrary-looking minute offset.
+
+    Deterministic on purpose: a random offset would make --sync-schedule
+    non-idempotent, and the test that catches workflow/config drift would fail
+    every time it ran.
+    """
+    digest = hashlib.sha256(seed.encode()).digest()
+    return OFFSET_CHOICES[digest[0] % len(OFFSET_CHOICES)]
+
+
+def parse_schedule(raw: dict | None, seed: str = "") -> Schedule:
     """Build a Schedule from the `schedule:` block of searches.yaml."""
     raw = raw or {}
     name = raw.get("timezone", "UTC")
@@ -118,15 +141,30 @@ def parse_schedule(raw: dict | None) -> Schedule:
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ScheduleError(f"unknown timezone {name!r}: {exc}") from None
     start, end = _parse_window(raw.get("active_hours", "00:00-00:00"))
-    return Schedule(tz=tz, start=start, end=end, days=_parse_days(raw.get("days")))
+
+    offset = raw.get("minute_offset")
+    return Schedule(
+        tz=tz,
+        start=start,
+        end=end,
+        days=_parse_days(raw.get("days")),
+        minute_offset=int(offset) if offset is not None else _derived_offset(seed or name),
+    )
 
 
-def _step_for(interval_minutes: int) -> tuple[str, int]:
-    """Cron minute field and its real spacing, for a given interval."""
+def _step_for(interval_minutes: int, offset: int = 0) -> tuple[str, int]:
+    """Cron minute field and its real spacing, for a given interval.
+
+    Written as an explicit minute list rather than "*/N" so the schedule can be
+    shifted off the hour boundary. "*/15" always means :00 :15 :30 :45; an
+    offset of 7 gives "7,22,37,52", which fires just as often but away from the
+    congested boundary every other workflow uses.
+    """
     if interval_minutes < 60:
         step = max(s for s in CLEAN_MINUTE_STEPS if s <= interval_minutes)
-        return f"*/{step}", step
-    return "0", 60
+        start = offset % step
+        return ",".join(str(m) for m in range(start, 60, step)), step
+    return str(offset % 60), 60
 
 
 def required_cron(schedule: Schedule, interval_minutes: int, year: int | None = None) -> str:
@@ -137,11 +175,12 @@ def required_cron(schedule: Schedule, interval_minutes: int, year: int | None = 
     """
     if interval_minutes < 1:
         raise ScheduleError("interval_minutes must be >= 1")
-    minute_field, step = _step_for(interval_minutes)
+    minute_field, step = _step_for(interval_minutes, schedule.minute_offset)
+    first_minute = int(minute_field.split(",")[0])
 
     hours: set[int] = set()
     weekdays: set[int] = set()
-    day = datetime(year or date.today().year, 1, 1, tzinfo=timezone.utc)
+    day = datetime(year or date.today().year, 1, 1, minute=first_minute, tzinfo=timezone.utc)
     end_of_year = day + timedelta(days=365)
     while day < end_of_year:
         if schedule.is_active(day):

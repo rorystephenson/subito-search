@@ -71,7 +71,9 @@ class TestWindow(unittest.TestCase):
 class TestRequiredCron(unittest.TestCase):
     def test_rome_8_to_22_at_15_minutes(self):
         # Rome is UTC+1/+2, so the UTC window must span 06:00-20:59.
-        self.assertEqual(required_cron(rome_window(), 15, year=2026), "*/15 6-20 * * *")
+        self.assertEqual(
+            required_cron(rome_window(minute_offset=0), 15, year=2026), "0,15,30,45 6-20 * * *"
+        )
 
     def test_cron_covers_every_active_slot_all_year(self):
         """The real invariant: the cron must never miss an active local slot."""
@@ -96,12 +98,16 @@ class TestRequiredCron(unittest.TestCase):
         self.assertEqual(missed[:3], [], f"{len(missed)} active slots not covered")
 
     def test_always_schedule_spans_all_hours(self):
-        self.assertEqual(required_cron(parse_schedule({}), 30, year=2026), "*/30 * * * *")
+        self.assertEqual(
+            required_cron(parse_schedule({"minute_offset": 0}), 30, year=2026), "0,30 * * * *"
+        )
 
     def test_interval_snaps_to_a_clean_cron_step(self):
         # 45 doesn't divide 60, so */45 would leave an uneven gap each hour.
-        self.assertTrue(required_cron(parse_schedule({}), 45, year=2026).startswith("*/30 "))
-        self.assertTrue(required_cron(parse_schedule({}), 60, year=2026).startswith("0 "))
+        # 45 does not divide 60, so it snaps down to a 30 minute step.
+        minutes = required_cron(parse_schedule({"minute_offset": 0}), 45, year=2026).split()[0]
+        self.assertEqual(minutes, "0,30")
+        self.assertEqual(required_cron(parse_schedule({"minute_offset": 0}), 60, year=2026).split()[0], "0")
 
     def test_day_restriction_reaches_the_cron(self):
         cron = required_cron(rome_window(days=["sat", "sun"]), 30, year=2026)
@@ -137,3 +143,68 @@ class TestWorkflowSync(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMinuteOffset(unittest.TestCase):
+    """The cron is shifted off :00/:15/:30/:45."""
+
+    def sched(self, seed="", **kw):
+        return parse_schedule(
+            {"timezone": "Europe/Rome", "active_hours": "08:00-22:00", **kw}, seed=seed
+        )
+
+    def test_never_fires_on_the_hour_boundary(self):
+        # :00 is where every other scheduled workflow on GitHub fires; landing
+        # there is exactly what the offset exists to prevent.
+        for seed in ("a", "b", "c", "pixel-10-pro-xl", "x", "y", "zz", "q1", ""):
+            with self.subTest(seed):
+                cron = required_cron(self.sched(seed), 15, year=2026)
+                self.assertFalse(cron.startswith("0,"), cron)
+                self.assertNotIn("*/", cron)
+
+    def test_spacing_stays_even(self):
+        # Uneven gaps would wake a run that finds nothing due and exits.
+        minutes = [int(m) for m in required_cron(self.sched("x"), 15, year=2026).split()[0].split(",")]
+        gaps = [b - a for a, b in zip(minutes, minutes[1:])]
+        self.assertEqual(set(gaps), {15})
+        self.assertEqual(len(minutes), 4)
+
+    def test_explicit_offset_is_honoured(self):
+        cron = required_cron(self.sched(minute_offset=7), 15, year=2026)
+        self.assertEqual(cron.split()[0], "7,22,37,52")
+
+    def test_offset_is_deterministic(self):
+        # Otherwise --sync-schedule would never be idempotent and the drift
+        # test would fail on every run.
+        a = required_cron(self.sched("pixel"), 15, year=2026)
+        b = required_cron(self.sched("pixel"), 15, year=2026)
+        self.assertEqual(a, b)
+
+    def test_different_seeds_generally_differ(self):
+        crons = {required_cron(self.sched(s), 15, year=2026) for s in "abcdefgh"}
+        self.assertGreater(len(crons), 1)
+
+    def test_offset_cron_still_covers_the_whole_window(self):
+        """The offset must not shift coverage off the edges of the window."""
+        schedule = self.sched("pixel-10-pro-xl")
+        cron = required_cron(schedule, 15, year=2026)
+        minute_field, hour_field = cron.split()[0], cron.split()[1]
+        minutes = {int(m) for m in minute_field.split(",")}
+        hours = set()
+        for part in hour_field.split(","):
+            if "-" in part:
+                lo, hi = map(int, part.split("-"))
+                hours |= set(range(lo, hi + 1))
+            else:
+                hours.add(int(part))
+
+        missed = []
+        moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        while moment.year == 2026:
+            fires = moment.hour in hours and moment.minute in minutes
+            if schedule.is_active(moment) and fires:
+                pass
+            elif schedule.is_active(moment) and moment.minute in minutes and not fires:
+                missed.append(moment)
+            moment += timedelta(minutes=1)
+        self.assertEqual(missed[:3], [], f"{len(missed)} firing slots fall outside the cron hours")

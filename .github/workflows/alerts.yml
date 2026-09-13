@@ -10,7 +10,7 @@ on:
     # spans both of Rome's DST offsets, and the job itself exits immediately
     # when the real local time is outside the configured hours.
     # Note: GitHub often delays scheduled runs under load.
-    - cron: "*/15 6-20 * * *"
+    - cron: "4,19,34,49 6-20 * * *"
   workflow_dispatch:
     inputs:
       ignore_interval:

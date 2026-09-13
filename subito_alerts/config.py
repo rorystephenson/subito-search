@@ -94,7 +94,10 @@ def load_config(path: Path) -> Config:
     searches = load_searches(path)
     try:
         data = yaml.safe_load(path.read_text()) or {}
-        schedule = parse_schedule(data.get("schedule"))
+        # Seeded with the search names so two different configs do not land on
+        # the same minutes.
+        seed = ",".join(sorted(s.name for s in searches))
+        schedule = parse_schedule(data.get("schedule"), seed=seed)
     except ScheduleError as exc:
         raise ConfigError(f"{path}: {exc}") from None
 
