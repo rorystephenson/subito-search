@@ -266,9 +266,6 @@ Two things that aren't obvious and will silently degrade the bot if changed:
   Replacing the User-Agent contradicts the TLS profile, which is a louder
   signal than sending nothing. Only the XHR headers the subito app itself adds
   are layered on top.
-- **The proxy pool is a fallback, not the mechanism.** With a browser
-  fingerprint a direct connection works, so the pool is built lazily the first
-  time a direct request is refused, and never probed otherwise.
 
 
 ## Tests

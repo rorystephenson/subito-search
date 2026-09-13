@@ -12,7 +12,6 @@ from pathlib import Path
 
 from .classify import ClassifierError, GeminiClassifier, Verdict
 from .config import Config, ConfigError, Search, load_config, load_dotenv
-from .proxies import ProxyPool
 from .state import SearchState, State
 from .subito import Ad, SubitoClient
 from .schedule import (
@@ -141,118 +140,6 @@ def run_search(
     return counts
 
 
-def build_client(config: Config, state: State) -> SubitoClient:
-    """A search client, with a proxy pool when the config allows one."""
-    pool = None
-    if config.proxies.enabled:
-        pool = ProxyPool.from_json(
-            state.proxies,
-            sources=config.proxies.sources,
-            min_pool=config.proxies.min_pool,
-            probe_concurrency=config.proxies.probe_concurrency,
-            probe_batch=config.proxies.probe_batch,
-        )
-    return SubitoClient(
-        pool=pool,
-        allow_direct=config.proxies.allow_direct,
-        max_proxy_attempts=config.proxies.max_attempts,
-        impersonate=config.proxies.impersonate,
-    )
-
-
-def refresh_proxies(config: Config, state_path: Path) -> int:
-    """Probe public lists for working proxies and record them in the state."""
-    if not config.proxies.enabled:
-        print("proxies are disabled (proxies.mode: never)")
-        return 0
-    state = State.load(state_path)
-    client = build_client(config, state)
-    pool = client.pool
-    assert pool is not None
-    before = len(pool.proven_hosts)
-    pool.refresh(client.prober())
-    state.proxies = pool.to_json()
-    state.save()
-    print(f"working proxy hosts: {before} -> {len(pool.proven_hosts)} "
-          f"({len(pool.proven)} entries, {len(pool.records)} known)")
-    for record in sorted(pool.proven, key=lambda r: -r.successes)[:10]:
-        print(f"    {record.url:34} ok={record.successes} strikes={record.strikes}")
-    return 0
-
-
-LAUNCHD_LABEL = "com.subito-alerts.agent"
-
-LAUNCHD_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" \
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>{label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{python}</string>
-    <string>-m</string>
-    <string>subito_alerts.main</string>
-  </array>
-  <key>WorkingDirectory</key><string>{workdir}</string>
-  <!-- Fires this often; the schedule block in searches.yaml decides whether
-       there is anything to do, so runs outside active hours exit immediately.
-       launchd also runs a missed job once after the Mac wakes. -->
-  <key>StartInterval</key><integer>{interval}</integer>
-  <key>RunAtLoad</key><false/>
-  <key>StandardOutPath</key><string>{log}</string>
-  <key>StandardErrorPath</key><string>{log}</string>
-</dict>
-</plist>
-"""
-
-
-def install_launchd(config: Config, project: Path) -> int:
-    """Install a launchd agent that runs the bot on this Mac.
-
-    Scheduled runners are blocked by subito, so the practical place to run this
-    is a machine on a residential connection. The interval comes from
-    searches.yaml, same as the workflow cron does.
-    """
-    import subprocess
-
-    python = project / ".venv/bin/python"
-    if not python.exists():
-        python = Path(sys.executable)
-
-    logs = project / "logs"
-    logs.mkdir(exist_ok=True)
-    plist_path = Path.home() / "Library/LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
-    plist_path.parent.mkdir(parents=True, exist_ok=True)
-
-    plist_path.write_text(LAUNCHD_PLIST.format(
-        label=LAUNCHD_LABEL,
-        python=python,
-        workdir=project,
-        interval=config.min_interval * 60,
-        log=logs / "subito-alerts.log",
-    ))
-
-    # bootout first so a reinstall picks up changes rather than silently keeping
-    # the old definition; it fails harmlessly when nothing is loaded yet.
-    domain = f"gui/{os.getuid()}"
-    subprocess.run(["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"],
-                   capture_output=True)
-    result = subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)],
-                            capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"✗ launchctl bootstrap failed: {result.stderr.strip()}")
-        return 1
-
-    print(f"✓ installed {plist_path}")
-    print(f"  runs every {config.min_interval}m, active {config.schedule.describe()}")
-    print(f"  logs: {logs / 'subito-alerts.log'}")
-    print(f"\n  status:    launchctl list | grep {LAUNCHD_LABEL}")
-    print(f"  run now:   launchctl kickstart {domain}/{LAUNCHD_LABEL}")
-    print(f"  uninstall: launchctl bootout {domain}/{LAUNCHD_LABEL}")
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="subito-alerts",
@@ -297,10 +184,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--install-launchd", action="store_true",
         help="install a launchd agent on this Mac that runs the bot on schedule",
-    )
-    parser.add_argument(
-        "--refresh-proxies", action="store_true",
-        help="probe public proxy lists for working proxies, then exit",
     )
     parser.add_argument(
         "--ignore-schedule", action="store_true",
@@ -352,11 +235,10 @@ def check(config: Config, workflow: Path, dry_run: bool) -> int:
     # Reachability is the thing most likely to be wrong on a new machine, and
     # it is the one check that says which transport actually carried the
     # request — direct, or through which borrowed IP.
-    client = build_client(config, State.load(Path("state.json")))
+    client = SubitoClient(impersonate=config.fetch.impersonate)
     try:
         ads = list(client.search("bici", max_pages=1))
-        transport = client._preferred or "direct connection"
-        print(f"✓ subito: {len(ads)} ads via {transport} (impersonating {client.impersonate})")
+        print(f"✓ subito: {len(ads)} ads (impersonating {client.impersonate})")
     except Exception as exc:
         print(f"✗ subito: {exc}")
         ok = False
@@ -401,8 +283,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.install_launchd:
         return install_launchd(config, Path.cwd())
 
-    if args.refresh_proxies:
-        return refresh_proxies(config, args.state)
 
     searches = config.searches
 
@@ -445,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     state = State.load(args.state)
-    client = build_client(config, state)
+    client = SubitoClient(impersonate=config.fetch.impersonate)
 
     total = Counts()
     failed = False
@@ -462,10 +342,6 @@ def main(argv: list[str] | None = None) -> int:
         for field_name in vars(total):
             setattr(total, field_name,
                     getattr(total, field_name) + getattr(counts, field_name))
-
-    if client.pool is not None:
-        client.pool.prune()
-        state.proxies = client.pool.to_json()
 
     if args.dry_run:
         log.info("dry run — state not saved")

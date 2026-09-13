@@ -10,23 +10,17 @@ schedule:
   active_hours: "08:00-22:00"   # end is exclusive: last run starts before 22:00
   # days: [mon, tue, wed, thu, fri]   # optional; defaults to every day
 
+# How the HTTP client presents itself to subito.
+#
 # Subito sits behind Akamai, which scores the client's TLS and HTTP/2
-# fingerprint. A plain HTTP library is refused; curl_cffi reproduces a real
-# Chrome handshake, which is accepted — including from hosting networks, where
-# a plain library gets 403.
+# fingerprint rather than just the address it came from. A plain HTTP library is
+# refused with 403; curl_cffi reproducing a real Chrome handshake is accepted —
+# including from GitHub's runners, where a plain library is not.
 #
-# With that in place a direct connection generally works, so the proxy pool is
-# only a fallback: it is built lazily, the first time a direct request is
-# actually refused, and never probed otherwise.
+# If alerts stop and `--check` reports a 403, this is the setting to change:
+# roll it forward to a newer profile. curl_cffi ships the list it supports.
 #
-#   - `impersonate` selects the browser profile. Roll it forward as Chrome
-#     versions age; curl_cffi ships the current list.
-#   - `python -m subito_alerts.main --refresh-proxies` fills the pool by hand.
-#
-proxies:
-  mode: auto            # auto (direct first) | always (proxy only) | never
-  min_pool: 3           # distinct working hosts to find when a top-up is needed
-  max_attempts: 6       # transports to try before giving up on a request
+fetch:
   impersonate: chrome136
 
 # Applied to every search unless the search overrides them.
