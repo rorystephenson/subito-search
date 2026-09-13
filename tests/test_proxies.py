@@ -102,13 +102,36 @@ class TestPool(unittest.TestCase):
         self.assertEqual(list(pool.records), ["http://ok:1"])
 
     def test_refresh_skipped_when_pool_is_healthy(self):
+        # Distinct hosts: five ports on one machine would count as one usable
+        # transport, and the pool would correctly decide it needs topping up.
         pool = ProxyPool(
-            records=[ProxyRecord(f"http://p:{i}", successes=1, last_ok=NOW) for i in range(5)],
+            records=[
+                ProxyRecord(f"http://10.0.0.{i}:1080", successes=1, last_ok=NOW)
+                for i in range(5)
+            ],
             min_pool=3,
         )
         probe = Mock()
+        fetch = Mock()
+        pool.fetch_candidates = fetch
         self.assertEqual(pool.refresh(probe), 0)
         probe.assert_not_called()
+        fetch.assert_not_called()  # must not touch the network either
+
+    def test_many_ports_on_one_host_count_once(self):
+        pool = ProxyPool(
+            records=[
+                ProxyRecord(f"socks5://45.74.31.30:{port}", successes=1, last_ok=NOW)
+                for port in (1080, 1081, 1082, 1083)
+            ],
+            min_pool=3,
+        )
+        self.assertEqual(len(pool.proven), 4)
+        self.assertEqual(len(pool.proven_hosts), 1)
+        # So the pool knows it is short, and tops up rather than declaring victory.
+        pool.fetch_candidates = lambda: ["socks5://10.0.0.9:1080"]
+        pool.refresh(lambda url: "ok")
+        self.assertEqual(len(pool.proven_hosts), 2)
 
     @staticmethod
     def _octet(url: str) -> int:
