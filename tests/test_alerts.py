@@ -33,7 +33,7 @@ def make_ad(ad_id="1", title="Bici da corsa", body="", price=300, image=None, po
 
 
 def make_search(**kw):
-    base = dict(name="s", query="bici", prompt="a road bike", interval_minutes=60)
+    base = dict(name="s", query="bici", prompt="a road bike", cold_start_minutes=30)
     base.update(kw)
     return Search(**base)
 
@@ -157,9 +157,9 @@ class TestPrefilter(unittest.TestCase):
 
 
 class TestState(unittest.TestCase):
-    def test_cold_start_is_bounded_by_interval(self):
+    def test_cold_start_uses_the_configured_window(self):
         s = SearchState()
-        self.assertEqual(s.cutoff(30, NOW), NOW - timedelta(minutes=60))
+        self.assertEqual(s.cutoff(30, NOW), NOW - timedelta(minutes=30))
 
     def test_cold_start_never_exceeds_24h(self):
         s = SearchState()
@@ -169,10 +169,6 @@ class TestState(unittest.TestCase):
         last = NOW - timedelta(minutes=5)
         self.assertEqual(SearchState(last_run=last).cutoff(60, NOW), last)
 
-    def test_is_due(self):
-        self.assertTrue(SearchState().is_due(30, NOW))
-        self.assertFalse(SearchState(last_run=NOW - timedelta(minutes=5)).is_due(30, NOW))
-        self.assertTrue(SearchState(last_run=NOW - timedelta(minutes=31)).is_due(30, NOW))
 
     def test_seen_ids_are_trimmed_fifo(self):
         s = SearchState()
@@ -201,14 +197,14 @@ class TestState(unittest.TestCase):
 class TestConfig(unittest.TestCase):
     def test_defaults_are_inherited_and_overridden(self):
         p = write_yaml(
-            "defaults: {interval_minutes: 60, max_pages: 3}\n"
+            "defaults: {cold_start_minutes: 60, max_pages: 3}\n"
             "searches:\n"
-            "  - {name: a, query: bici, prompt: x, interval_minutes: 15}\n"
+            "  - {name: a, query: bici, prompt: x, cold_start_minutes: 15}\n"
             "  - {name: b, query: moto, prompt: y}\n"
         )
         a, b = load_searches(p)
-        self.assertEqual((a.interval_minutes, a.max_pages), (15, 3))
-        self.assertEqual((b.interval_minutes, b.max_pages), (60, 3))
+        self.assertEqual((a.cold_start_minutes, a.max_pages), (15, 3))
+        self.assertEqual((b.cold_start_minutes, b.max_pages), (60, 3))
 
     def test_rejections(self):
         bad = {
@@ -217,7 +213,7 @@ class TestConfig(unittest.TestCase):
             "unknown filter": "searches:\n  - {name: a, query: b, prompt: x, filters: {colour: red}}\n",
             "inverted price": "searches:\n  - {name: a, query: b, prompt: x, filters: {price_min: 900, price_max: 1}}\n",
             "duplicate name": "searches:\n  - {name: a, query: b, prompt: x}\n  - {name: a, query: c, prompt: y}\n",
-            "zero interval": "searches:\n  - {name: a, query: b, prompt: x, interval_minutes: 0}\n",
+            "zero cold start": "searches:\n  - {name: a, query: b, prompt: x, cold_start_minutes: 0}\n",
             "no searches": "defaults: {max_pages: 1}\n",
             "bad yaml": "searches: [\n",
         }

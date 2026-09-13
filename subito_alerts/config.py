@@ -9,8 +9,6 @@ from typing import Any
 
 import yaml
 
-from .schedule import Schedule, ScheduleError, parse_schedule
-
 VALID_FILTERS = {
     "category", "region", "town", "price_min", "price_max",
     "shippable", "title_only",
@@ -34,13 +32,8 @@ class FetchSettings:
 @dataclass
 class Config:
     searches: list[Search]
-    schedule: Schedule
     fetch: FetchSettings = field(default_factory=FetchSettings)
 
-    @property
-    def min_interval(self) -> int:
-        """The cron must wake up at least this often to honour every search."""
-        return min(s.interval_minutes for s in self.searches)
 
 
 @dataclass
@@ -48,7 +41,10 @@ class Search:
     name: str
     query: str
     prompt: str
-    interval_minutes: int = 60
+    # How far back to look the first time a search runs, or after the state
+    # file is lost. Scheduling itself lives in the VPS crontab — this only
+    # bounds a cold start, so it cannot alert on a whole page of old listings.
+    cold_start_minutes: int = 30
     max_pages: int = 2
     filters: dict[str, Any] = field(default_factory=dict)
     exclude_keywords: list[str] = field(default_factory=list)
@@ -62,8 +58,8 @@ def _validate(search: Search) -> None:
             f"search {search.name!r}: 'prompt' is required — it tells the "
             "classifier what you're actually interested in"
         )
-    if search.interval_minutes < 1:
-        raise ConfigError(f"search {search.name!r}: 'interval_minutes' must be >= 1")
+    if search.cold_start_minutes < 1:
+        raise ConfigError(f"search {search.name!r}: 'cold_start_minutes' must be >= 1")
     unknown = set(search.filters) - VALID_FILTERS
     if unknown:
         raise ConfigError(
@@ -80,18 +76,11 @@ def _validate(search: Search) -> None:
 def load_config(path: Path) -> Config:
     """Load searches.yaml — the single source of truth for what runs and when."""
     searches = load_searches(path)
-    try:
-        data = yaml.safe_load(path.read_text()) or {}
-        # Seeded with the search names so two different configs do not land on
-        # the same minutes.
-        seed = ",".join(sorted(s.name for s in searches))
-        schedule = parse_schedule(data.get("schedule"), seed=seed)
-    except ScheduleError as exc:
-        raise ConfigError(f"{path}: {exc}") from None
+    data = yaml.safe_load(path.read_text()) or {}
 
     raw_fetch = data.get("fetch") or {}
     fetch = FetchSettings(impersonate=str(raw_fetch.get("impersonate", "chrome136")))
-    return Config(searches=searches, schedule=schedule, fetch=fetch)
+    return Config(searches=searches, fetch=fetch)
 
 
 def load_searches(path: Path) -> list[Search]:
@@ -121,8 +110,8 @@ def load_searches(path: Path) -> list[Search]:
             name=name,
             query=entry.get("query", ""),
             prompt=entry.get("prompt", ""),
-            interval_minutes=int(
-                entry.get("interval_minutes", defaults.get("interval_minutes", 60))
+            cold_start_minutes=int(
+                entry.get("cold_start_minutes", defaults.get("cold_start_minutes", 30))
             ),
             max_pages=int(entry.get("max_pages", defaults.get("max_pages", 2))),
             filters=entry.get("filters") or {},

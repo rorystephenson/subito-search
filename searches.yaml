@@ -1,14 +1,6 @@
-# When the bot is allowed to run, in LOCAL time.
-#
-# This is the single source of truth for scheduling. Regenerate the GitHub
-# workflow's cron (UTC, DST-aware) or the launchd job after changing it:
-#
-#     python -m subito_alerts.main --sync-schedule
-#
-schedule:
-  timezone: Europe/Rome
-  active_hours: "08:00-22:00"   # end is exclusive: last run starts before 22:00
-  # days: [mon, tue, wed, thu, fri]   # optional; defaults to every day
+# WHEN this runs is not configured here. A cron on the VPS dispatches the
+# GitHub Actions workflow; see deploy-subito-trigger.sh in the infra repo.
+# Running this command just runs every search once.
 
 # How the HTTP client presents itself to subito.
 #
@@ -25,13 +17,12 @@ fetch:
 
 # Applied to every search unless the search overrides them.
 defaults:
-  interval_minutes: 60
+  cold_start_minutes: 30
   max_pages: 2
 
 searches:
   - name: pixel-10-pro-xl
     query: "pixel 10 pro xl"
-    interval_minutes: 15
 
     # Deliberately no price or shipping filters here. Subito's `shippable` flag
     # is one sellers often leave unset even when they will post, so filtering on

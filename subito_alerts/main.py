@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,12 +13,6 @@ from .classify import ClassifierError, GeminiClassifier, Verdict
 from .config import Config, ConfigError, Search, load_config, load_dotenv
 from .state import SearchState, State
 from .subito import Ad, SubitoClient
-from .schedule import (
-    ScheduleError,
-    read_workflow_cron,
-    required_cron,
-    write_workflow_cron,
-)
 from .telegram import TelegramError, TelegramNotifier
 
 log = logging.getLogger("subito_alerts")
@@ -70,19 +63,12 @@ def run_search(
     classifier: GeminiClassifier | None,
     notifier: TelegramNotifier | None,
     now: datetime,
-    ignore_interval: bool,
 ) -> Counts:
     counts = Counts()
     search_state = state.for_search(search.name)
 
-    if not ignore_interval and not search_state.is_due(search.interval_minutes, now):
-        log.info(
-            "[%s] not due yet (every %dm, last run %s)",
-            search.name, search.interval_minutes, search_state.last_run,
-        )
-        return counts
 
-    cutoff = search_state.cutoff(search.interval_minutes, now)
+    cutoff = search_state.cutoff(search.cold_start_minutes, now)
     log.info("[%s] searching %r for ads since %s", search.name, search.query, cutoff)
 
     candidates: list[Ad] = []
@@ -162,10 +148,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="print results instead of sending to Telegram; state is not saved",
     )
     parser.add_argument(
-        "--ignore-interval", action="store_true",
-        help="run every search regardless of when it last ran",
-    )
-    parser.add_argument(
         "--no-classify", action="store_true",
         help="skip the LLM pass; report every new ad (useful for tuning filters)",
     )
@@ -173,62 +155,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--check", action="store_true",
         help="verify config and credentials, then exit without searching",
     )
-    parser.add_argument(
-        "--sync-schedule", action="store_true",
-        help="regenerate the workflow's cron from searches.yaml, then exit",
-    )
-    parser.add_argument(
-        "--workflow", type=Path, default=Path(".github/workflows/alerts.yml"),
-        help="workflow file to sync (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--install-launchd", action="store_true",
-        help="install a launchd agent on this Mac that runs the bot on schedule",
-    )
-    parser.add_argument(
-        "--ignore-schedule", action="store_true",
-        help="run even outside the configured active hours",
-    )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     return parser
 
 
-def sync_schedule(config: Config, workflow: Path) -> int:
-    """Rewrite the workflow cron from searches.yaml. The config always wins."""
-    cron = required_cron(config.schedule, config.min_interval)
-    try:
-        current = read_workflow_cron(workflow)
-    except ScheduleError as exc:
-        log.error("%s", exc)
-        return 2
-    if write_workflow_cron(workflow, cron):
-        print(f"updated {workflow}\n  {current}  ->  {cron}")
-    else:
-        print(f"{workflow} already up to date ({cron})")
-    return 0
-
-
-def describe_schedule(config: Config, workflow: Path) -> None:
-    wanted = required_cron(config.schedule, config.min_interval)
-    print(f"✓ schedule: {config.schedule.describe()}, every {config.min_interval}m")
-    try:
-        current = read_workflow_cron(workflow)
-    except ScheduleError:
-        print(f"  cron (not synced to a workflow): {wanted}")
-        return
-    if current == wanted:
-        print(f"  workflow cron: {current} (in sync)")
-    else:
-        print(f"  ✗ workflow cron is {current!r}, config wants {wanted!r}")
-        print("    fix with: python -m subito_alerts.main --sync-schedule")
-
-
-def check(config: Config, workflow: Path, dry_run: bool) -> int:
+def check(config: Config, dry_run: bool) -> int:
     searches = config.searches
     print(f"✓ config: {len(searches)} search(es)")
     for s in searches:
-        print(f"    {s.name}: {s.query!r} every {s.interval_minutes}m, filters={s.filters or '{}'}")
-    describe_schedule(config, workflow)
+        print(f"    {s.name}: {s.query!r}, filters={s.filters or '{}'}")
 
     ok = True
 
@@ -277,11 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         log.error("%s", exc)
         return 2
 
-    if args.sync_schedule:
-        return sync_schedule(config, args.workflow)
 
-    if args.install_launchd:
-        return install_launchd(config, Path.cwd())
 
 
     searches = config.searches
@@ -295,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
         searches = [s for s in searches if s.name in wanted]
 
     if args.check:
-        return check(config, args.workflow, args.dry_run)
+        return check(config, args.dry_run)
 
     classifier = None
     if not args.no_classify:
@@ -315,14 +246,6 @@ def main(argv: list[str] | None = None) -> int:
 
     now = datetime.now(timezone.utc).astimezone()
 
-    # The cron only wakes us up; local time decides whether we act. This is what
-    # makes "08:00-22:00 Rome" correct across DST, which a UTC cron cannot be.
-    if not args.ignore_schedule and not config.schedule.is_active(now):
-        log.info(
-            "outside active hours (%s) — nothing to do",
-            config.schedule.describe(),
-        )
-        return 0
 
     state = State.load(args.state)
     client = SubitoClient(impersonate=config.fetch.impersonate)
@@ -332,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     for search in searches:
         try:
             counts = run_search(
-                search, state, client, classifier, notifier, now, args.ignore_interval
+                search, state, client, classifier, notifier, now
             )
         except Exception:
             # One broken search must not cost us the others, or the state file.

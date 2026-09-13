@@ -46,12 +46,8 @@ class SearchState:
             self.seen_ids = self.seen_ids[-MAX_SEEN:]
             self._seen.difference_update(dropped)
 
-    def is_due(self, interval_minutes: int, now: datetime) -> bool:
-        if self.last_run is None:
-            return True
-        return now - self.last_run >= timedelta(minutes=interval_minutes)
 
-    def cutoff(self, interval_minutes: int, now: datetime) -> datetime:
+    def cutoff(self, cold_start_minutes: int, now: datetime) -> datetime:
         """Ignore ads posted before this instant.
 
         With state, that's simply the last run. Without it (first run, or an
@@ -60,7 +56,7 @@ class SearchState:
         """
         if self.last_run is not None:
             return self.last_run
-        window = min(timedelta(minutes=interval_minutes * 2), COLD_START_CAP)
+        window = min(timedelta(minutes=cold_start_minutes), COLD_START_CAP)
         log.info("no stored state, cold-starting with a %s look-back", window)
         return now - window
 

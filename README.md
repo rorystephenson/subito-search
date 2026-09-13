@@ -82,13 +82,12 @@ schedule:
   # days: [mon, tue, wed, thu, fri]
 
 defaults:
-  interval_minutes: 60
+  cold_start_minutes: 30
   max_pages: 2
 
 searches:
   - name: bici-da-corsa
     query: "bici da corsa"
-    interval_minutes: 30
     filters:
       price_min: 200
       price_max: 600
@@ -101,30 +100,13 @@ searches:
 
 ### Scheduling
 
-`searches.yaml` is the **single source of truth** for when the bot runs. The
-`schedule` block sets the window in *local* time; each search's
-`interval_minutes` sets how often it runs inside that window.
+There is none in here. A cron on a VPS dispatches the workflow — see
+`deploy-subito-trigger.sh` in the infra repo. Running this command just runs
+every search once, immediately.
 
-GitHub's cron is UTC-only and has no DST awareness, so the workflow's cron is
-**generated** from this config rather than written by hand:
-
-```bash
-python -m subito_alerts.main --sync-schedule
-```
-
-Run that after changing `schedule` or any `interval_minutes`. A test fails if the
-two drift apart, and `--check` reports it, so it can't silently rot.
-
-Two mechanisms combine:
-
-- The generated cron is a *superset* of your window — wide enough to cover both
-  DST offsets (for Rome, `08:00-22:00` local becomes `*/15 6-20 * * *` in UTC).
-- Each run then checks the **real local time** and exits immediately if it's
-  outside the window. That's what makes the window actually correct year-round;
-  the cron only decides when to wake up.
-
-The cost is about four wasted wake-ups a day at the DST edges — the price of
-cron having no timezone support.
+`cold_start_minutes` is not a schedule: it bounds how far back a search looks
+the very first time it runs, or after the state file is lost, so a cold start
+alerts on recent listings rather than a whole page of old ones.
 
 **`prompt` is the important part.** Be specific about what you *don't* want as
 well as what you do — that's what kills the noise. The classifier is told to lean
@@ -151,10 +133,10 @@ before the LLM runs. Use it for words that are *always* wrong — it saves quota
 
 ```bash
 # See what it would do, without sending anything. State is not saved.
-python -m subito_alerts.main --dry-run --ignore-interval
+python -m subito_alerts.main --dry-run
 
 # Tune the filters without spending LLM calls
-python -m subito_alerts.main --dry-run --ignore-interval --no-classify
+python -m subito_alerts.main --dry-run --no-classify
 
 # For real
 python -m subito_alerts.main
@@ -163,17 +145,14 @@ python -m subito_alerts.main
 | Flag | |
 |---|---|
 | `--dry-run` | print instead of sending; don't save state |
-| `--ignore-interval` | run every search regardless of when it last ran |
 | `--search NAME` | run just one search (repeatable) |
 | `--no-classify` | skip the LLM pass entirely |
 | `--check` | verify config, schedule and credentials, then exit |
-| `--sync-schedule` | regenerate the workflow cron from `searches.yaml` |
-| `--ignore-schedule` | run even outside the configured active hours |
 | `--verbose` | debug logging |
 
 ### Tuning your prompt
 
-Run `--dry-run --ignore-interval` and read the verdict lines — each shows
+Run `--dry-run` and read the verdict lines — each shows
 `MATCH`/`reject` and the model's one-line reason:
 
 ```
@@ -186,8 +165,9 @@ your prompt to soften. Iterate here before letting it run unattended.
 
 ## Running on GitHub Actions
 
-`.github/workflows/alerts.yml`'s cron is generated from `searches.yaml` — see
-[Scheduling](#scheduling). Don't edit it by hand; run `--sync-schedule`.
+`.github/workflows/alerts.yml` has no `schedule:` trigger — GitHub's cron
+never fired here. It is started by the VPS trigger, or by hand from the Actions
+tab.
 
 1. Push this repo to GitHub. **Make it private** — `searches.yaml` says what
    you're hunting for and what you'll pay.
@@ -201,36 +181,19 @@ all from your home connection.
 
 ### Cost
 
-Actions is free and unlimited on **public** repositories. On **private** ones you
-get 2,000 minutes/month on the Free plan (3,000 on Pro/Team), then $0.006/min.
-Each run is rounded up to a whole minute, so cost tracks the number of runs, not
-their length:
+Actions is free and unlimited on public repositories. On a private one you get
+2,000 minutes/month on the Free plan, and each run is billed as a whole minute —
+so cost tracks the number of dispatches. The schedule in the VPS crontab
+(08:00-22:00 Rome, every 15 minutes) is about 1,700 runs a month.
 
-| Schedule | Runs/month | Private, Free plan |
-|---|---|---|
-| every 15m, 08:00–22:00 Rome | ~1,825 | free, ~9% headroom |
-| every 15m, all day | ~2,880 | ~880 min over → ~$5.30/mo |
-| every 30m, all day | ~1,440 | free |
-
-Restricting the active window is what keeps a 15-minute interval inside the free
-tier — round-the-clock at `*/15` would not fit. `--check` prints the generated
-cron so you can sanity-check the run count before pushing.
-
-Private is the recommended setup: free at this schedule, and your shopping list
-stays your business. If you do make the repo public, note that **Actions logs are
-public too** — they show every ad title, price and classifier verdict, i.e. what
-you're hunting and what you'll pay. Secrets themselves stay safe: GitHub encrypts
-them and masks them in logs, and this code additionally scrubs the bot token out
-of Telegram error messages (Telegram puts the token in the URL path, so a bare
-connection error would otherwise print it).
 
 ### State, and why duplicates are unlikely
 
 Which ads have already been alerted on is kept in `state.json`, carried between
 runs in the Actions cache. Caches are evicted after 7 days without use, so on a
 cache miss the bot does **not** treat the whole first page as new — it only looks
-back `interval_minutes × 2` (capped at 24h). Losing the cache on a 30-minute
-search therefore costs you a duplicate alert or two, not a flood.
+back `cold_start_minutes` (capped at 24h). Losing the cache therefore costs you
+a duplicate alert or two, not a flood.
 
 ### Gotchas
 

@@ -1,28 +1,13 @@
 name: Subito alerts
 
+# Dispatched by a cron on the VPS — see deploy-subito-trigger.sh in the infra
+# repo. GitHub's own `schedule:` trigger is deliberately absent: it never fired
+# once here, across an hour and a half of ticks on a correctly configured cron.
 on:
-  schedule:
-    # GENERATED from the `schedule` block in searches.yaml — do not hand-edit.
-    #   python -m subito_alerts.main --sync-schedule
-    # A test fails if this drifts from the config.
-    #
-    # Actions cron is UTC-only, so this is a superset of the local window: it
-    # spans both of Rome's DST offsets, and the job itself exits immediately
-    # when the real local time is outside the configured hours.
-    # Note: GitHub often delays scheduled runs under load.
-    - cron: "4,19,34,49 6-20 * * *"
   workflow_dispatch:
     inputs:
-      ignore_interval:
-        description: "Run every search regardless of its interval"
-        type: boolean
-        default: false
       dry_run:
         description: "Classify but don't send to Telegram"
-        type: boolean
-        default: false
-      ignore_schedule:
-        description: "Run even outside the configured active hours"
         type: boolean
         default: false
       check_only:
@@ -72,9 +57,7 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         run: |
           python -m subito_alerts.main \
-            ${{ inputs.ignore_interval && '--ignore-interval' || '' }} \
             ${{ inputs.dry_run && '--dry-run' || '' }} \
-            ${{ inputs.ignore_schedule && '--ignore-schedule' || '' }} \
             ${{ inputs.check_only && '--check' || '' }}
 
       # `always()` so a partial run still records what it already sent,
