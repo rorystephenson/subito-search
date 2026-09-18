@@ -92,8 +92,11 @@ def load_searches(path: Path) -> list[Search]:
         raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
 
     defaults = data.get("defaults") or {}
+    # An explicit `searches: []` is a deliberate pause between hunts: the VPS
+    # trigger keeps dispatching and each run is a no-op. A missing key is
+    # still an error, since that is far more likely a typo than an intent.
     entries = data.get("searches")
-    if not entries:
+    if entries is None:
         raise ConfigError(f"{path} defines no searches")
 
     searches: list[Search] = []

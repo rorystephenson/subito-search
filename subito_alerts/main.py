@@ -228,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         return check(config, args.dry_run)
 
+    if not searches:
+        log.info("no searches configured — nothing to do")
+        return 0
+
     classifier = None
     if not args.no_classify:
         try:

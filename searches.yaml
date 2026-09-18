@@ -20,37 +20,6 @@ defaults:
   cold_start_minutes: 30
   max_pages: 2
 
-searches:
-  - name: pixel-10-pro-xl
-    query: "pixel 10 pro xl"
-
-    # Deliberately no price or shipping filters here. Subito's `shippable` flag
-    # is one sellers often leave unset even when they will post, so filtering on
-    # it server-side would silently drop good listings. The prompt below judges
-    # shipping from what the ad actually says instead.
-    filters: {}
-
-    # No keyword excludes either: they match the description too, so "non ho la
-    # custodia" would wrongly kill a real listing. The classifier handles it.
-
-    prompt: >
-      A Google Pixel 10 Pro XL with 512GB of storage.
-
-      STORAGE — this rule decides the verdict on its own. Check the TITLE as
-      well as the description; the size is often only in the title, written as
-      "16/256", "16+256", "256 gb" or "256 giga".
-      If either the title or the description states a storage size smaller than
-      512GB, REJECT the ad. A size written in the title is stated knowledge, not
-      a doubt, and it overrides any inclination to keep the listing for checking.
-      Only when no storage size appears anywhere should you KEEP it — there I
-      would rather check a listing myself than miss one.
-
-      SHIPPING: reject ads where the seller will not post the phone. In Italian
-      these say things like "solo a mano", "consegna a mano", "solo di persona",
-      "ritiro in zona", "niente spedizioni", "no spedizione". Also reject ads
-      that only want to swap rather than sell — "solo scambio", "permuta",
-      "scambio a mano". If shipping is not mentioned either way, KEEP it.
-
-      Also reject: cases, covers, screen protectors, chargers, cables, spare
-      parts, screens, phones sold as broken or for parts, and other models —
-      plain Pixel 10, Pixel 10 Pro without XL, or any Pixel 9 or earlier.
+# Empty between hunts: runs still fire, but do nothing. Add a search here to
+# resume. The last one (pixel-10-pro-xl) is in git history as a template.
+searches: []

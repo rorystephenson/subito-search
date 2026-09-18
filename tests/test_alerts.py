@@ -221,6 +221,9 @@ class TestConfig(unittest.TestCase):
             with self.subTest(label), self.assertRaises(ConfigError):
                 load_searches(write_yaml(text))
 
+    def test_an_explicit_empty_list_is_a_pause(self):
+        self.assertEqual(load_searches(write_yaml("searches: []\n")), [])
+
     def test_keywords_are_lowercased(self):
         p = write_yaml("searches:\n  - {name: a, query: b, prompt: x, exclude_keywords: [RICAMBI]}\n")
         self.assertEqual(load_searches(p)[0].exclude_keywords, ["ricambi"])
