@@ -50,12 +50,16 @@ class SearchState:
     def cutoff(self, cold_start_minutes: int, now: datetime) -> datetime:
         """Ignore ads posted before this instant.
 
-        With state, that's simply the last run. Without it (first run, or an
-        evicted cache) we use a bounded look-back window rather than accepting
-        everything the first page happens to contain.
+        With state, that's simply the last run — but never more than
+        COLD_START_CAP ago. A search that stops being sent keeps its state while
+        the list is empty (the trigger does not dispatch an empty list, so
+        nothing prunes it), and re-adding it weeks later must not alert on the
+        whole backlog. Without state (first run, or an evicted cache) we use a
+        bounded look-back window rather than accepting everything the first
+        page happens to contain.
         """
         if self.last_run is not None:
-            return self.last_run
+            return max(self.last_run, now - COLD_START_CAP)
         window = min(timedelta(minutes=cold_start_minutes), COLD_START_CAP)
         log.info("no stored state, cold-starting with a %s look-back", window)
         return now - window
@@ -88,8 +92,14 @@ class State:
         log.info("loaded state for %d search(es) from %s", len(searches), path)
         return cls(path, searches)
 
-    def for_search(self, name: str) -> SearchState:
-        return self.searches.setdefault(name, SearchState())
+    def for_search(self, key: str) -> SearchState:
+        return self.searches.setdefault(key, SearchState())
+
+    def prune(self, keep: set[str]) -> None:
+        """Forget every search not in `keep`."""
+        for key in set(self.searches) - keep:
+            log.info("forgetting state for removed search %s", key)
+            del self.searches[key]
 
     def save(self) -> None:
         payload: dict[str, Any] = {

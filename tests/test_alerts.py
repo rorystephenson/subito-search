@@ -11,7 +11,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from subito_alerts import classify as C
-from subito_alerts.config import ConfigError, Search, load_dotenv, load_searches
+from subito_alerts.config import (
+    Config, ConfigError, Search, load_config, load_dotenv, parse_searches, search_key,
+)
 from subito_alerts.main import Counts, prefilter
 from subito_alerts.state import MAX_SEEN, SearchState, State
 from subito_alerts.subito import IMAGE_RULE, Ad, _is_yes, _parse_price, build_params, parse_ad
@@ -33,15 +35,9 @@ def make_ad(ad_id="1", title="Bici da corsa", body="", price=300, image=None, po
 
 
 def make_search(**kw):
-    base = dict(name="s", query="bici", prompt="a road bike", cold_start_minutes=30)
+    base = dict(query="bici", prompt="a road bike", cold_start_minutes=30)
     base.update(kw)
     return Search(**base)
-
-
-def write_yaml(text: str) -> Path:
-    path = Path(tempfile.mkdtemp()) / "searches.yaml"
-    path.write_text(text)
-    return path
 
 
 class TestParsing(unittest.TestCase):
@@ -149,12 +145,6 @@ class TestPrefilter(unittest.TestCase):
         s = make_search(filters={"price_min": 200, "price_max": 600})
         self.assertTrue(self.check(make_ad(price=None), s))
 
-    def test_rejects_excluded_keyword_in_title_or_body(self):
-        s = make_search(exclude_keywords=["ricambi"])
-        self.assertFalse(self.check(make_ad(title="Ricambi bici"), s))
-        self.assertFalse(self.check(make_ad("2", body="vendo solo RICAMBI"), s))
-        self.assertEqual(self.counts.skipped_keyword, 2)
-
 
 class TestState(unittest.TestCase):
     def test_cold_start_uses_the_configured_window(self):
@@ -169,6 +159,18 @@ class TestState(unittest.TestCase):
         last = NOW - timedelta(minutes=5)
         self.assertEqual(SearchState(last_run=last).cutoff(60, NOW), last)
 
+    def test_stale_last_run_is_capped(self):
+        # A search dropped from the list and re-added weeks later must not
+        # alert on everything posted in between.
+        stale = SearchState(last_run=NOW - timedelta(days=30))
+        self.assertEqual(stale.cutoff(30, NOW), NOW - timedelta(hours=24))
+
+    def test_prune_forgets_searches_not_kept(self):
+        st = State(Path(tempfile.mkdtemp()) / "state.json")
+        st.for_search("keep").mark_seen("1")
+        st.for_search("drop").mark_seen("2")
+        st.prune({"keep"})
+        self.assertEqual(set(st.searches), {"keep"})
 
     def test_seen_ids_are_trimmed_fifo(self):
         s = SearchState()
@@ -195,38 +197,52 @@ class TestState(unittest.TestCase):
 
 
 class TestConfig(unittest.TestCase):
-    def test_defaults_are_inherited_and_overridden(self):
-        p = write_yaml(
-            "defaults: {cold_start_minutes: 60, max_pages: 3}\n"
-            "searches:\n"
-            "  - {name: a, query: bici, prompt: x, cold_start_minutes: 15}\n"
-            "  - {name: b, query: moto, prompt: y}\n"
+    def parse(self, entries, config=None):
+        return parse_searches(json.dumps(entries), config or Config())
+
+    def test_defaults_come_from_the_config(self):
+        (s,) = self.parse(
+            [{"query": "bici", "prompt": "x", "filters": {"price_max": 600}}],
+            Config(cold_start_minutes=60, max_pages=3),
         )
-        a, b = load_searches(p)
-        self.assertEqual((a.cold_start_minutes, a.max_pages), (15, 3))
-        self.assertEqual((b.cold_start_minutes, b.max_pages), (60, 3))
+        self.assertEqual((s.cold_start_minutes, s.max_pages), (60, 3))
+        self.assertEqual(s.filters, {"price_max": 600})
+
+    def test_key_ignores_case_whitespace_and_prompt(self):
+        a, = self.parse([{"query": "Pixel 10  Pro", "prompt": "one"}])
+        b, = self.parse([{"query": " pixel 10 pro ", "prompt": "two", "filters": {"shippable": True}}])
+        self.assertEqual(a.key, b.key)
+        self.assertNotEqual(a.key, search_key("pixel 10"))
 
     def test_rejections(self):
         bad = {
-            "missing prompt": "searches:\n  - {name: a, query: b}\n",
-            "empty query": "searches:\n  - {name: a, query: '', prompt: x}\n",
-            "unknown filter": "searches:\n  - {name: a, query: b, prompt: x, filters: {colour: red}}\n",
-            "inverted price": "searches:\n  - {name: a, query: b, prompt: x, filters: {price_min: 900, price_max: 1}}\n",
-            "duplicate name": "searches:\n  - {name: a, query: b, prompt: x}\n  - {name: a, query: c, prompt: y}\n",
-            "zero cold start": "searches:\n  - {name: a, query: b, prompt: x, cold_start_minutes: 0}\n",
-            "no searches": "defaults: {max_pages: 1}\n",
-            "bad yaml": "searches: [\n",
+            "missing prompt": [{"query": "b"}],
+            "empty query": [{"query": " ", "prompt": "x"}],
+            "unknown filter": [{"query": "b", "prompt": "x", "filters": {"colour": "red"}}],
+            "inverted price": [{"query": "b", "prompt": "x", "filters": {"price_min": 900, "price_max": 1}}],
+            "filters not an object": [{"query": "b", "prompt": "x", "filters": [1]}],
+            "same query twice": [{"query": "Bici", "prompt": "x"}, {"query": "bici ", "prompt": "y"}],
+            "not a list": {"query": "b", "prompt": "x"},
+            "entry not an object": ["bici"],
         }
-        for label, text in bad.items():
+        for label, entries in bad.items():
             with self.subTest(label), self.assertRaises(ConfigError):
-                load_searches(write_yaml(text))
+                self.parse(entries)
+        with self.assertRaises(ConfigError):
+            parse_searches("[{", Config())
 
-    def test_an_explicit_empty_list_is_a_pause(self):
-        self.assertEqual(load_searches(write_yaml("searches: []\n")), [])
+    def test_empty_list_is_fine(self):
+        self.assertEqual(self.parse([]), [])
 
-    def test_keywords_are_lowercased(self):
-        p = write_yaml("searches:\n  - {name: a, query: b, prompt: x, exclude_keywords: [RICAMBI]}\n")
-        self.assertEqual(load_searches(p)[0].exclude_keywords, ["ricambi"])
+    def test_load_config_reads_fetch_and_defaults(self):
+        path = Path(tempfile.mkdtemp()) / "searches.yaml"
+        path.write_text(
+            "fetch: {impersonate: chrome999}\n"
+            "defaults: {cold_start_minutes: 45, max_pages: 1}\n"
+        )
+        config = load_config(path)
+        self.assertEqual(config.fetch.impersonate, "chrome999")
+        self.assertEqual((config.cold_start_minutes, config.max_pages), (45, 1))
 
 
 VERDICTS = json.dumps({"results": [
@@ -411,6 +427,10 @@ class TestTelegram(unittest.TestCase):
             with self.assertRaises(Exception) as ctx:
                 n._call("sendMessage", {"text": "x"})
         self.assertNotIn(token, str(ctx.exception))
+
+    def test_shows_the_query(self):
+        out = format_message(C.Verdict(make_ad(), True, 0.9, "x"), "pixel 10 & pro")
+        self.assertIn("🔎 pixel 10 &amp; pro", out)
 
     def test_unclassified_is_flagged(self):
         out = format_message(C.Verdict.unclassified(make_ad(), "classifier unavailable"), "s")

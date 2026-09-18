@@ -1,6 +1,6 @@
-# WHEN this runs is not configured here. A cron on the VPS dispatches the
-# GitHub Actions workflow; see deploy-subito-trigger.sh in the infra repo.
-# Running this command just runs every search once.
+# Neither WHEN this runs nor WHAT it searches for is configured here. A cron on
+# the VPS dispatches the GitHub Actions workflow and sends the list of searches
+# with it; see projects/subito-trigger in the infra repo.
 
 # How the HTTP client presents itself to subito.
 #
@@ -15,11 +15,7 @@
 fetch:
   impersonate: chrome136
 
-# Applied to every search unless the search overrides them.
+# Applied to every search the client sends.
 defaults:
   cold_start_minutes: 30
   max_pages: 2
-
-# Empty between hunts: runs still fire, but do nothing. Add a search here to
-# resume. The last one (pixel-10-pro-xl) is in git history as a template.
-searches: []

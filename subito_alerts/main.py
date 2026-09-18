@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .classify import ClassifierError, GeminiClassifier, Verdict
-from .config import Config, ConfigError, Search, load_config, load_dotenv
+from .config import (
+    Config, ConfigError, Search, load_config, load_dotenv, normalise_query,
+    parse_searches,
+)
 from .state import SearchState, State
 from .subito import Ad, SubitoClient
 from .telegram import TelegramError, TelegramNotifier
@@ -24,7 +28,6 @@ class Counts:
     skipped_seen: int = 0
     skipped_old: int = 0
     skipped_price: int = 0
-    skipped_keyword: int = 0
     classified: int = 0
     matched: int = 0
     sent: int = 0
@@ -47,12 +50,6 @@ def prefilter(
         if (lo is not None and ad.price < lo) or (hi is not None and ad.price > hi):
             counts.skipped_price += 1
             return False
-
-    if search.exclude_keywords:
-        haystack = f"{ad.title} {ad.body}".lower()
-        if any(word in haystack for word in search.exclude_keywords):
-            counts.skipped_keyword += 1
-            return False
     return True
 
 
@@ -65,11 +62,11 @@ def run_search(
     now: datetime,
 ) -> Counts:
     counts = Counts()
-    search_state = state.for_search(search.name)
+    search_state = state.for_search(search.key)
 
 
     cutoff = search_state.cutoff(search.cold_start_minutes, now)
-    log.info("[%s] searching %r for ads since %s", search.name, search.query, cutoff)
+    log.info("[%s] searching for ads since %s (state %s)", search.query, cutoff, search.key)
 
     candidates: list[Ad] = []
     for ad in client.search(
@@ -81,10 +78,9 @@ def run_search(
 
     log.info(
         "[%s] %d fetched → %d new candidate(s) "
-        "(seen %d, old %d, price %d, keyword %d)",
-        search.name, counts.fetched, len(candidates),
-        counts.skipped_seen, counts.skipped_old,
-        counts.skipped_price, counts.skipped_keyword,
+        "(seen %d, old %d, price %d)",
+        search.query, counts.fetched, len(candidates),
+        counts.skipped_seen, counts.skipped_old, counts.skipped_price,
     )
 
     if candidates:
@@ -112,7 +108,7 @@ def run_search(
                 counts.matched += 1
                 if notifier is not None:
                     try:
-                        notifier.send(verdict, search.name)
+                        notifier.send(verdict, search.query)
                         counts.sent += 1
                     except TelegramError as exc:
                         # Don't mark as seen — retry it on the next run.
@@ -136,11 +132,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to searches.yaml (default: %(default)s)",
     )
     parser.add_argument(
+        "--searches", type=Path, metavar="FILE",
+        help="JSON list of searches to run; defaults to the $SUBITO_SEARCHES "
+             "variable, which is how the workflow receives them",
+    )
+    parser.add_argument(
         "-s", "--state", type=Path, default=Path("state.json"),
         help="path to the state file (default: %(default)s)",
     )
     parser.add_argument(
-        "--search", action="append", dest="only", metavar="NAME",
+        "--search", action="append", dest="only", metavar="QUERY",
         help="run only this search (repeatable)",
     )
     parser.add_argument(
@@ -159,11 +160,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def check(config: Config, dry_run: bool) -> int:
-    searches = config.searches
+def check(config: Config, searches: list[Search], dry_run: bool) -> int:
     print(f"✓ config: {len(searches)} search(es)")
     for s in searches:
-        print(f"    {s.name}: {s.query!r}, filters={s.filters or '{}'}")
+        print(f"    {s.key}: {s.query!r}, filters={s.filters or '{}'}")
 
     ok = True
 
@@ -208,28 +208,29 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = load_config(args.config)
-    except ConfigError as exc:
+        raw = (
+            args.searches.read_text() if args.searches
+            else os.environ.get("SUBITO_SEARCHES", "")
+        )
+        # Nothing sent at all is a manual run from the Actions tab: harmless.
+        searches = parse_searches(raw, config) if raw.strip() else []
+    except (ConfigError, OSError) as exc:
         log.error("%s", exc)
         return 2
 
-
-
-
-    searches = config.searches
-
     if args.only:
-        wanted = set(args.only)
-        unknown = wanted - {s.name for s in searches}
+        wanted = {normalise_query(q) for q in args.only}
+        unknown = wanted - {normalise_query(s.query) for s in searches}
         if unknown:
             log.error("no such search(es): %s", ", ".join(sorted(unknown)))
             return 2
-        searches = [s for s in searches if s.name in wanted]
+        searches = [s for s in searches if normalise_query(s.query) in wanted]
 
     if args.check:
-        return check(config, args.dry_run)
+        return check(config, searches, args.dry_run)
 
     if not searches:
-        log.info("no searches configured — nothing to do")
+        log.info("no searches supplied — nothing to do")
         return 0
 
     classifier = None
@@ -263,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception:
             # One broken search must not cost us the others, or the state file.
-            log.exception("[%s] failed", search.name)
+            log.exception("[%s] failed", search.query)
             failed = True
             continue
         for field_name in vars(total):
@@ -273,6 +274,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         log.info("dry run — state not saved")
     else:
+        # The client's list is the whole truth, so a search it dropped loses its
+        # state. Otherwise re-adding it weeks later would take the stale last
+        # run as its cutoff and alert on the entire backlog. A run narrowed by
+        # --search has not seen the whole list, so it must not prune.
+        if not args.only:
+            state.prune({s.key for s in searches})
         state.save()
 
     log.info(

@@ -31,7 +31,7 @@ def _esc(text: str) -> str:
     return html.escape(text or "", quote=False)
 
 
-def format_message(verdict: Verdict, search_name: str) -> str:
+def format_message(verdict: Verdict, query: str) -> str:
     ad = verdict.ad
     lines = [f"<b>{_esc(ad.title)}</b>"]
 
@@ -58,7 +58,7 @@ def format_message(verdict: Verdict, search_name: str) -> str:
         lines.append(f"🤖 <i>{_esc(verdict.reason)}</i>{confidence}")
 
     if ad.posted_at:
-        lines.append(f"🕑 {ad.posted_at.strftime('%d/%m %H:%M')}  ·  #{_esc(search_name)}")
+        lines.append(f"🕑 {ad.posted_at.strftime('%d/%m %H:%M')}  ·  🔎 {_esc(query)}")
 
     text = "\n".join(lines)
     if len(text) > CAPTION_LIMIT:
@@ -123,8 +123,8 @@ class TelegramNotifier:
         """Verify the token works. Returns the bot's username."""
         return self._call("getMe", {}).get("result", {}).get("username", "?")
 
-    def send(self, verdict: Verdict, search_name: str) -> None:
-        caption = format_message(verdict, search_name)
+    def send(self, verdict: Verdict, query: str) -> None:
+        caption = format_message(verdict, query)
         keyboard = {
             "inline_keyboard": [[{"text": "Apri su Subito →", "url": verdict.ad.url}]]
         }

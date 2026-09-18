@@ -1,7 +1,9 @@
-"""Load and validate searches.yaml."""
+"""Load settings from searches.yaml, and parse the searches the client sends."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,59 +33,70 @@ class FetchSettings:
 
 @dataclass
 class Config:
-    searches: list[Search]
     fetch: FetchSettings = field(default_factory=FetchSettings)
+    # Applied to every search the client sends; the client only chooses the
+    # query, the prompt and optionally filters.
+    cold_start_minutes: int = 30
+    max_pages: int = 2
 
+
+def normalise_query(query: str) -> str:
+    """Casefold and collapse whitespace, so trivial edits keep a search's state."""
+    return " ".join(query.casefold().split())
+
+
+def search_key(query: str) -> str:
+    """A search's identity: its normalised query, hashed.
+
+    Only the query goes in. The prompt and filters can be tuned freely without
+    the search forgetting what it has already seen and starting from scratch.
+    """
+    return hashlib.sha256(normalise_query(query).encode()).hexdigest()[:12]
 
 
 @dataclass
 class Search:
-    name: str
     query: str
     prompt: str
-    # How far back to look the first time a search runs, or after the state
-    # file is lost. Scheduling itself lives in the VPS crontab — this only
-    # bounds a cold start, so it cannot alert on a whole page of old listings.
+    # How far back to look the first time a search runs, or after its state is
+    # lost. Scheduling itself lives on the VPS — this only bounds a cold start,
+    # so it cannot alert on a whole page of old listings.
     cold_start_minutes: int = 30
     max_pages: int = 2
     filters: dict[str, Any] = field(default_factory=dict)
-    exclude_keywords: list[str] = field(default_factory=list)
+
+    @property
+    def key(self) -> str:
+        return search_key(self.query)
 
 
 def _validate(search: Search) -> None:
     if not search.query.strip():
-        raise ConfigError(f"search {search.name!r}: 'query' must not be empty")
+        raise ConfigError("a search has an empty 'query'")
     if not search.prompt.strip():
         raise ConfigError(
-            f"search {search.name!r}: 'prompt' is required — it tells the "
+            f"search {search.query!r}: 'prompt' is required — it tells the "
             "classifier what you're actually interested in"
         )
-    if search.cold_start_minutes < 1:
-        raise ConfigError(f"search {search.name!r}: 'cold_start_minutes' must be >= 1")
     unknown = set(search.filters) - VALID_FILTERS
     if unknown:
         raise ConfigError(
-            f"search {search.name!r}: unknown filter(s) {sorted(unknown)}; "
+            f"search {search.query!r}: unknown filter(s) {sorted(unknown)}; "
             f"valid filters are {sorted(VALID_FILTERS)}"
         )
     lo, hi = search.filters.get("price_min"), search.filters.get("price_max")
     if lo is not None and hi is not None and lo > hi:
         raise ConfigError(
-            f"search {search.name!r}: price_min ({lo}) is above price_max ({hi})"
+            f"search {search.query!r}: price_min ({lo}) is above price_max ({hi})"
         )
 
 
 def load_config(path: Path) -> Config:
-    """Load searches.yaml — the single source of truth for what runs and when."""
-    searches = load_searches(path)
-    data = yaml.safe_load(path.read_text()) or {}
+    """Load searches.yaml: how to fetch, and the defaults every search gets.
 
-    raw_fetch = data.get("fetch") or {}
-    fetch = FetchSettings(impersonate=str(raw_fetch.get("impersonate", "chrome136")))
-    return Config(searches=searches, fetch=fetch)
-
-
-def load_searches(path: Path) -> list[Search]:
+    The searches themselves are not in here — the client that triggers the run
+    sends them. See parse_searches.
+    """
     if not path.exists():
         raise ConfigError(f"config file not found: {path}")
     try:
@@ -91,36 +104,49 @@ def load_searches(path: Path) -> list[Search]:
     except yaml.YAMLError as exc:
         raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
 
+    raw_fetch = data.get("fetch") or {}
     defaults = data.get("defaults") or {}
-    # An explicit `searches: []` is a deliberate pause between hunts: the VPS
-    # trigger keeps dispatching and each run is a no-op. A missing key is
-    # still an error, since that is far more likely a typo than an intent.
-    entries = data.get("searches")
-    if entries is None:
-        raise ConfigError(f"{path} defines no searches")
+    config = Config(
+        fetch=FetchSettings(impersonate=str(raw_fetch.get("impersonate", "chrome136"))),
+        cold_start_minutes=int(defaults.get("cold_start_minutes", 30)),
+        max_pages=int(defaults.get("max_pages", 2)),
+    )
+    if config.cold_start_minutes < 1:
+        raise ConfigError(f"{path}: 'cold_start_minutes' must be >= 1")
+    return config
+
+
+def parse_searches(raw: str, config: Config) -> list[Search]:
+    """Parse the client's JSON list: [{"query", "prompt", "filters"?}, ...]."""
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"searches are not valid JSON: {exc}") from exc
+    if not isinstance(entries, list):
+        raise ConfigError("searches must be a JSON array")
 
     searches: list[Search] = []
-    seen_names: set[str] = set()
+    seen: dict[str, str] = {}
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
-            raise ConfigError(f"searches[{index}] must be a mapping")
-        name = entry.get("name") or f"search-{index + 1}"
-        if name in seen_names:
-            raise ConfigError(f"duplicate search name {name!r}")
-        seen_names.add(name)
-
+            raise ConfigError(f"searches[{index}] must be an object")
+        filters = entry.get("filters") or {}
+        if not isinstance(filters, dict):
+            raise ConfigError(f"searches[{index}]: 'filters' must be an object")
         search = Search(
-            name=name,
-            query=entry.get("query", ""),
-            prompt=entry.get("prompt", ""),
-            cold_start_minutes=int(
-                entry.get("cold_start_minutes", defaults.get("cold_start_minutes", 30))
-            ),
-            max_pages=int(entry.get("max_pages", defaults.get("max_pages", 2))),
-            filters=entry.get("filters") or {},
-            exclude_keywords=[k.lower() for k in (entry.get("exclude_keywords") or [])],
+            query=str(entry.get("query") or ""),
+            prompt=str(entry.get("prompt") or ""),
+            cold_start_minutes=config.cold_start_minutes,
+            max_pages=config.max_pages,
+            filters=filters,
         )
         _validate(search)
+        # Two entries that normalise alike would share state and race on it.
+        if search.key in seen:
+            raise ConfigError(
+                f"searches {seen[search.key]!r} and {search.query!r} are the same query"
+            )
+        seen[search.key] = search.query
         searches.append(search)
     return searches
 

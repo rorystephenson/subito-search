@@ -7,15 +7,15 @@ get pinged about things you don't want. This runs your searches on a schedule,
 asks an LLM whether each new listing actually matches a plain-English description
 of what you're after, and sends only the survivors to your Telegram bot.
 
-Per search you configure: **the query and filters**, **a prompt describing your
-interest**, and **how often to run**.
+Per search you choose **the query**, **a prompt describing your interest**, and
+optionally **filters**. The list lives with the trigger on the VPS, not in this
+repo.
 
 ## How it works
 
 ```
 subito JSON API  →  cheap local filters  →  LLM interest check  →  Telegram
-                    (price, keywords,        (Gemini free tier)
-                     already-seen)
+                    (price, already-seen)    (Gemini free tier)
 ```
 
 The local filters run first so the LLM only ever sees genuinely new ads — that's
@@ -73,40 +73,36 @@ the bot to the group and send `/start` *there*; the ID will be negative.
 .venv/bin/python -m subito_alerts.main --check
 ```
 
-### 4. Edit `searches.yaml`
+### 4. Add a search
 
-```yaml
-schedule:
-  timezone: Europe/Rome
-  active_hours: "08:00-22:00"   # end exclusive: last run starts before 22:00
-  # days: [mon, tue, wed, thu, fri]
+Searches are not in this repo. The trigger on the VPS keeps them in
+`/opt/projects/subito-trigger/data/searches.json` and sends the whole list with
+every dispatch. Adding or removing one means editing that file; the next tick
+picks it up. See the infra repo's Subito Trigger section.
 
-defaults:
-  cold_start_minutes: 30
-  max_pages: 2
-
-searches:
-  - name: bici-da-corsa
-    query: "bici da corsa"
-    filters:
-      price_min: 200
-      price_max: 600
-      shippable: true
-    exclude_keywords: [bambino, ricambi]
-    prompt: >
-      A complete road bike in frame size 54-56, Shimano 105 or better.
-      Not interested in frames alone, spare parts, wheels, or mountain bikes.
+```json
+[
+  {
+    "query": "bici da corsa",
+    "filters": {"price_min": 200, "price_max": 600, "shippable": true},
+    "prompt": "A complete road bike in frame size 54-56, Shimano 105 or better. Not interested in frames alone, spare parts, wheels, or mountain bikes."
+  }
+]
 ```
 
-### Scheduling
+**A search is identified by its query alone** — lowercased, with runs of
+whitespace collapsed, then hashed into the state key. So:
 
-There is none in here. A cron on a VPS dispatches the workflow — see
-`deploy-subito-trigger.sh` in the infra repo. Running this command just runs
-every search once, immediately.
+- **Edit the `prompt` or `filters` freely.** The search keeps what it has
+  already seen and carries on from its last run.
+- **Changing the query makes it a new search.** It cold-starts, which is right:
+  a different query returns different ads.
+- **Removing a search forgets it.** The next run drops its state, so adding it
+  back later cold-starts instead of alerting on the whole backlog. As a
+  backstop, no search ever looks back further than 24h.
 
-`cold_start_minutes` is not a schedule: it bounds how far back a search looks
-the very first time it runs, or after the state file is lost, so a cold start
-alerts on recent listings rather than a whole page of old ones.
+An empty list means the trigger doesn't dispatch at all, so a pause between
+hunts costs no Actions minutes.
 
 **`prompt` is the important part.** Be specific about what you *don't* want as
 well as what you do — that's what kills the noise. The classifier is told to lean
@@ -126,28 +122,37 @@ bargain costs more than one extra notification.
 To find a `category` or `region` id, run the search on subito.it and read the ids
 out of the URL's query string.
 
-`exclude_keywords` is a local reject list checked against title and description
-before the LLM runs. Use it for words that are *always* wrong — it saves quota.
+### Scheduling
+
+There is none in here either. The same VPS trigger decides when runs happen.
+
+`searches.yaml` holds only how to fetch and the defaults every search gets.
+`cold_start_minutes` is not a schedule: it bounds how far back a search looks
+the very first time it runs, or after its state is lost, so a cold start alerts
+on recent listings rather than a whole page of old ones.
 
 ## Running it
 
+Locally, pass the list as a file (the workflow receives it in
+`$SUBITO_SEARCHES` instead):
+
 ```bash
 # See what it would do, without sending anything. State is not saved.
-python -m subito_alerts.main --dry-run
+python -m subito_alerts.main --searches searches.json --dry-run
 
 # Tune the filters without spending LLM calls
-python -m subito_alerts.main --dry-run --no-classify
-
-# For real
-python -m subito_alerts.main
+python -m subito_alerts.main --searches searches.json --dry-run --no-classify
 ```
+
+With no searches supplied, a run logs that and exits cleanly.
 
 | Flag | |
 |---|---|
+| `--searches FILE` | JSON list of searches to run |
 | `--dry-run` | print instead of sending; don't save state |
-| `--search NAME` | run just one search (repeatable) |
+| `--search QUERY` | run just the search with this query (repeatable) |
 | `--no-classify` | skip the LLM pass entirely |
-| `--check` | verify config, schedule and credentials, then exit |
+| `--check` | verify config, searches and credentials, then exit |
 | `--verbose` | debug logging |
 
 ### Tuning your prompt
@@ -169,12 +174,13 @@ your prompt to soften. Iterate here before letting it run unattended.
 never fired here. It is started by the VPS trigger, or by hand from the Actions
 tab.
 
-1. Push this repo to GitHub. **Make it private** — `searches.yaml` says what
-   you're hunting for and what you'll pay.
+1. Push this repo to GitHub. **Make it private**: each run's inputs, and so
+   what you're hunting for and what you'll pay, are visible in the Actions tab.
 2. Settings → Secrets and variables → Actions → add `GEMINI_API_KEY`,
    `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
    Optionally add a repo *variable* `GEMINI_MODEL` to override the model.
-3. Actions tab → **Subito alerts** → **Run workflow** to test it.
+3. Actions tab → **Subito alerts** → **Run workflow** to test it. Paste a JSON
+   list into **searches**; left empty, the run does nothing.
 
 Running on Actions also means requests come from varied runner IPs rather than
 all from your home connection.

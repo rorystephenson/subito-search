@@ -6,6 +6,10 @@ name: Subito alerts
 on:
   workflow_dispatch:
     inputs:
+      searches:
+        description: 'JSON list of searches: [{"query", "prompt", "filters"?}]'
+        type: string
+        default: ""
       dry_run:
         description: "Classify but don't send to Telegram"
         type: boolean
@@ -55,6 +59,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          # Through the environment, never interpolated into the script:
+          # prompts contain quotes, which would break the shell or inject into it.
+          SUBITO_SEARCHES: ${{ inputs.searches }}
         run: |
           python -m subito_alerts.main \
             ${{ inputs.dry_run && '--dry-run' || '' }} \
