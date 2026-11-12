@@ -21,7 +21,7 @@ SEARCH_URL = "https://hades.subito.it/v1/search/items"
 # User-Agent here would contradict the negotiated handshake, which is a louder
 # signal than sending nothing at all — so these are only the headers Chrome adds
 # for an XHR issued by the subito single-page app.
-IMPERSONATE = "chrome136"
+IMPERSONATE = "chrome150"
 
 HEADERS = {
     "Accept": "application/json",

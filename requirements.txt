@@ -1,4 +1,4 @@
 requests>=2.31
 PyYAML>=6.0
-curl_cffi>=0.7
+curl_cffi>=0.16.3
 

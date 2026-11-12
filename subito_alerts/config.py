@@ -28,7 +28,7 @@ class FetchSettings:
     # Subito scores the client's TLS and HTTP/2 fingerprint; curl_cffi
     # reproduces a real Chrome handshake. Roll this forward as Chrome versions
     # age — curl_cffi ships the list of profiles it supports.
-    impersonate: str = "chrome136"
+    impersonate: str = "chrome150"
 
 
 @dataclass
@@ -107,7 +107,7 @@ def load_config(path: Path) -> Config:
     raw_fetch = data.get("fetch") or {}
     defaults = data.get("defaults") or {}
     config = Config(
-        fetch=FetchSettings(impersonate=str(raw_fetch.get("impersonate", "chrome136"))),
+        fetch=FetchSettings(impersonate=str(raw_fetch.get("impersonate", "chrome150"))),
         cold_start_minutes=int(defaults.get("cold_start_minutes", 30)),
         max_pages=int(defaults.get("max_pages", 2)),
     )

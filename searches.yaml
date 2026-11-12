@@ -13,7 +13,7 @@
 # roll it forward to a newer profile. curl_cffi ships the list it supports.
 #
 fetch:
-  impersonate: chrome136
+  impersonate: chrome150
 
 # Applied to every search the client sends.
 defaults:
