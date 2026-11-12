@@ -351,6 +351,13 @@ class TestClassifier(unittest.TestCase):
             c.classify(self.ads, "x")
         self.assertEqual(hit.count("interactions"), 1)
 
+    def test_overload_is_reported_as_unavailable(self):
+        c = C.GeminiClassifier(api_key="k")
+        overloaded = Mock(status_code=C.HTTP_SERVICE_UNAVAILABLE, ok=False, text="high demand")
+        with patch.object(c.session, "post", return_value=overloaded):
+            with self.assertRaises(C.ClassifierUnavailable):
+                c.ping()
+
     def test_model_default_survives_empty_env_var(self):
         # An unset GitHub Actions repo variable arrives as "".
         with patch.dict("os.environ", {"GEMINI_MODEL": ""}):

@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
+HTTP_SERVICE_UNAVAILABLE = 503
+
 # Ads per request. Large enough to keep call volume (and free-tier quota use)
 # low, small enough that one bad ad can't poison a whole run.
 BATCH_SIZE = 15
@@ -81,6 +83,17 @@ RESULT_SCHEMA = {
 
 class ClassifierError(Exception):
     pass
+
+
+class ClassifierUnavailable(ClassifierError):
+    """Gemini is up but temporarily overloaded; nothing on our side is wrong."""
+
+
+def _http_error(resp: requests.Response) -> ClassifierError:
+    message = f"Gemini HTTP {resp.status_code}: {resp.text[:300]}"
+    if resp.status_code == HTTP_SERVICE_UNAVAILABLE:
+        return ClassifierUnavailable(message)
+    return ClassifierError(message)
 
 
 @dataclass
@@ -211,13 +224,11 @@ class GeminiClassifier:
             elif resp.ok:
                 return _reply_text(resp.json())
             else:
-                raise ClassifierError(
-                    f"Gemini HTTP {resp.status_code}: {resp.text[:300]}"
-                )
+                raise _http_error(resp)
 
         resp = self._post_legacy(prompt)
         if not resp.ok:
-            raise ClassifierError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
+            raise _http_error(resp)
         return _reply_text(resp.json())
 
     # -- public API ------------------------------------------------------------

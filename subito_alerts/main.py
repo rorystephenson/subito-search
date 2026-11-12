@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .classify import ClassifierError, GeminiClassifier, Verdict
+from .classify import ClassifierError, ClassifierUnavailable, GeminiClassifier, Verdict
 from .config import (
     Config, ConfigError, Search, load_config, load_dotenv, normalise_query,
     parse_searches,
@@ -182,6 +182,8 @@ def check(config: Config, searches: list[Search], dry_run: bool) -> int:
         classifier = GeminiClassifier()
         shape = classifier.ping()
         print(f"✓ gemini: model {classifier.model!r} reachable via {shape}")
+    except ClassifierUnavailable as exc:
+        print(f"- gemini: skipped, temporarily overloaded ({exc})")
     except ClassifierError as exc:
         print(f"✗ gemini: {exc}")
         ok = False
